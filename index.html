@@ -21,7 +21,10 @@ button,label.btn{font:600 15px var(--sans);padding:10px 14px;border-radius:999px
 button.ghost,label.btn{background:transparent;color:var(--accent)}
 button[aria-pressed="true"]{background:var(--accent);color:var(--bg)}
 button:focus-visible,label.btn:focus-within{outline:3px solid var(--gold);outline-offset:2px}
-input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+/* v10b (Kristin, Oct 18: tapping "16 in" opened the photo picker): the hidden file input sat loose next to the label and
+   caught taps on the next button. It now lives INSIDE the label's own box, so only the label opens it. */
+label.btn{position:relative;overflow:hidden}
+input[type=file]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
 .status{font-size:14px;color:var(--muted);min-height:1.4em}
 .stats{font:13px/1.4 ui-monospace,Menlo,monospace;color:var(--muted);font-variant-numeric:tabular-nums}
 .shot{margin-top:12px}.shot img{width:100%;border-radius:12px}
@@ -35,10 +38,10 @@ input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
   <div class="controls">
     <button id="camBtn">Start camera</button>
     <label class="btn" for="file">Use a photo<input id="file" type="file" accept="image/*"></label>
-    <button id="len16" class="ghost len" aria-pressed="false">16 in</button>
-    <button id="len18" class="ghost len" aria-pressed="true">18 in</button>
-    <button id="len20" class="ghost len" aria-pressed="false">20 in</button>
-    <button id="len22" class="ghost len" aria-pressed="false">22 in</button>
+    <button id="len17" class="ghost len" aria-pressed="true">16–18 in</button>
+    <button id="len19" class="ghost len" aria-pressed="false">18–20 in</button>
+    <button id="len21" class="ghost len" aria-pressed="false">20–22 in</button>
+    <button id="len23" class="ghost len" aria-pressed="false">22–24 in</button>
     <button id="pRise" class="ghost pend" aria-pressed="true">The Rise</button>
     <button id="pLove" class="ghost pend" aria-pressed="false">The Love</button>
     <button id="pSun" class="ghost pend" aria-pressed="false">Sun &amp; Moon</button>
@@ -63,8 +66,10 @@ let landmarker = null, segmenter = null, mode = null, lastT = -1, smooth = null,
 // to 17.32 in. Each inch of chain drops the pendant ~0.5 in (half goes to each near-straight side) = 0.035 x shoulder width
 // (shoulders ~14.5 in, estimate). DROP(L) = 0.125 + 0.035 x (L - 17.32).
 const ANCHOR_IN = 44 / 2.54, ANCHOR_DROP = 0.125, PER_IN = 0.035;
-const DROP = {}; for (const L of [16, 18, 20, 22]) DROP[L] = +(ANCHOR_DROP + PER_IN * (L - ANCHOR_IN)).toFixed(3);
-window.__lengthAnchorOk = () => Math.abs(ANCHOR_DROP + PER_IN * (44 / 2.54 - ANCHOR_IN) - 0.125) < 1e-9 && DROP[16] < DROP[18] && DROP[18] < DROP[20] && DROP[20] < DROP[22];
+// v10b: Love Talla sells adjustable chains in 16-18, 18-20, 20-22 and 22-24 in (about 29 necklaces on lovetalla.com,
+// Oct 18, 2026). Each button shows the MIDDLE of its range (17/19/21/23 in), where most people wear an adjustable chain.
+const DROP = {}; for (const L of [16, 17, 18, 19, 20, 21, 22, 23, 24]) DROP[L] = +(ANCHOR_DROP + PER_IN * (L - ANCHOR_IN)).toFixed(3);
+window.__lengthAnchorOk = () => Math.abs(ANCHOR_DROP + PER_IN * (44 / 2.54 - ANCHOR_IN) - 0.125) < 1e-9 && DROP[17] < DROP[19] && DROP[19] < DROP[21] && DROP[21] < DROP[23];
 window.__drops = DROP; // debug
 // v9 close-up fallback: body proportions MEASURED on the calibration photo (ear-to-ear width and mouth-to-shoulder-line
 // distance, as shares of shoulder width). Used only when the shoulders are out of frame.
@@ -76,7 +81,7 @@ const FACE = {earPerSw: 0.392, mouthToSm: 0.398};
 // mouth (shoulder anchor spread 0.09-0.19 shoulder widths, ~35%). sw is now a face-based unit: earW / 0.392 (calibration
 // ratio), and mouthToSm 0.398 makes a 44 cm chain land at 1.335 ear-widths below the mouth.
 let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
-let length = 18;
+let length = 17; // v10b: 16-18 in range (Kristin's own 44 cm chain is in it)
 const say = (t) => { statusEl.textContent = t; };
 
 async function init() {
@@ -139,7 +144,9 @@ function readSeg(r) {
   if (hair) {
     if (hairCanvas.width !== mw || hairCanvas.height !== mh) { hairCanvas.width = mw; hairCanvas.height = mh; }
     const img = hairCtx.createImageData(mw, mh), d = img.data;
-    for (let i = 0; i < hair.length; i++) { const a = Math.min(1, Math.max(0, (hair[i] - 0.35) / 0.4)); d[i * 4 + 3] = a * 255; }
+    // v10b: background too, so the chain vanishes where it passes the neck's outline (behind the neck), like a real chain.
+    const bgc = r.confidenceMasks[0] ? r.confidenceMasks[0].getAsFloat32Array() : null;
+    for (let i = 0; i < hair.length; i++) { const v = bgc ? Math.max(hair[i], bgc[i]) : hair[i]; const a = Math.min(1, Math.max(0, (v - 0.35) / 0.4)); d[i * 4 + 3] = a * 255; }
     hairCtx.putImageData(img, 0, 0);
   }
   const cloth = r.confidenceMasks && r.confidenceMasks[4] ? r.confidenceMasks[4].getAsFloat32Array() : null;
@@ -192,57 +199,70 @@ function neckEdges(p, w, h) {
   const base = p.sw * 0.17; // v8 width (Kristin liked v1's 0.17 x shoulder width)
   const out = {L: base, R: base, how: "v8 width"};
   if (!seg) return out;
-  const ca = Math.cos(p.ang), sa = Math.sin(p.ang), ny = p.neckY - p.sm.y;
+  const ca = Math.cos(p.ang), sa = Math.sin(p.ang); let ny = p.neckY - p.sm.y;
   // Start at the mouth's spot along the necklace line (more reliably on skin than the shoulder midpoint).
   const mdx = p.mouth.x - p.sm.x, mdy = p.mouth.y - p.sm.y, cx = mdx * ca + mdy * sa;
   const pt = (x) => ({x: p.sm.x + x * ca - ny * sa, y: p.sm.y + x * sa + ny * ca});
+  // v10b: if a high neck band sits at the chain's row, lift the row to just above the band (on the neck), so the chain
+  // starts on the neck and crosses OVER the band, instead of stopping on it.
+  const bandUp = () => {
+    for (let y = ny - p.sw * 0.12; y <= ny + 0.0001; y += p.sw * 0.01) {
+      const q = {x: p.sm.x + cx * ca - y * sa, y: p.sm.y + cx * sa + y * ca};
+      if (catAt(q.x, q.y, w, h) === 4) return y - p.sw * 0.02;
+    }
+    return null;
+  };
+  const lifted = bandUp(); if (lifted !== null && lifted < ny) { ny = lifted; out.neckY = p.sm.y + ny; }
   const c0 = pt(cx), neckSkin = isSkin(catAt(c0.x, c0.y, w, h));
-  const step = Math.max(1, w / seg.mw * 0.5), maxD = p.sw * 0.45, res = {"-1": {edge: base, stopCat: -1}, "1": {edge: base, stopCat: -1}};
-  if (neckSkin) for (const s of [-1, 1]) {
+  // v10c (Kristin, Oct 18: "it needs to follow where the neck and shirt meet"): each side of the chain starts at the
+  // point where the NECK meets the SHIRT on that side. Step 1: walk out over neck skin to find the neck's outline.
+  // Step 2: just inside that outline, walk DOWN until the skin meets fabric (the neckline): that is the start point.
+  // If no fabric is met (open neckline), the chain starts at the neck's outline. Background and hair are drawn back over
+  // the chain, so it disappears behind the neck where it should.
+  const step = Math.max(1, w / seg.mw * 0.5), res = {"-1": {edge: base, stopCat: -1, y: ny}, "1": {edge: base, stopCat: -1, y: ny}};
+  const at = (x, y) => { const q = {x: p.sm.x + x * ca - y * sa, y: p.sm.y + x * sa + y * ca}; return catAt(q.x, q.y, w, h); };
+  for (const s of [-1, 1]) {
     let d = 0, miss = 0, last = 0, stopCat = -1;
-    while (d < maxD) {
-      d += step; const q = pt(cx + s * d), c = catAt(q.x, q.y, w, h);
+    if (neckSkin) while (d < p.sw * 0.3) {
+      d += step; const c = at(cx + s * d, ny);
       if (isSkin(c)) { last = d; miss = 0; } else if (++miss >= 3) { stopCat = c; break; }
     }
-    const edge = Math.abs(cx + s * last); // distance from the shoulder midpoint
-    res[s] = {edge, stopCat};
+    let edge = neckSkin && stopCat >= 0 ? Math.abs(cx + s * last) : base;
+    edge = Math.min(p.sw * 0.24, Math.max(p.sw * 0.13, edge));
+    const colX = s * edge - s * p.sw * 0.015; // just inside the outline
+    let yJ = null;
+    for (let y = ny; y <= ny + p.sw * 0.25; y += step) { const c = at(colX, y); if (c === 4) { yJ = y; break; } if (!isSkin(c) && c !== 1) break; }
+    res[s] = {edge: Math.abs(colX), stopCat, y: yJ !== null ? yJ : ny, met: yJ !== null};
   }
-  // v9c (Kristin, Oct 18: "too narrow on the neck"): a collar (clothes) or hair stop is NOT the neck edge, so it can
-  // only widen the chain, never narrow it. Only the neck's outline against the BACKGROUND (class 0) may narrow it, and
-  // never below 0.15 x shoulder width. Measured on Kristin's real necklace: the chain disappears 0.35 x sw apart (0.175 per side).
-  const pick = (r) => {
-    if (r.edge < p.sw * 0.07 || r.edge > p.sw * 0.3) return base; // not believable; keep v8
-    return r.stopCat === 0 ? Math.max(r.edge, p.sw * 0.15) : Math.max(r.edge, base);
-  };
-  if (neckSkin) { out.L = pick(res[-1]); out.R = pick(res[1]); }
-  // v9e (Kristin, Oct 18: "stop at hair... can we also do that with collars?"): a COLLAR is shirt fabric standing up
-  // beside the neck, ABOVE where the chain meets the neck. A crew-neck tee has only skin or hair there, so it is not a
-  // collar and the chain stays on top of the shirt. Sample 6 spots per side just above the chain's start point
-  // (0.03 and 0.06 x shoulder width up; 90/100/110% of its distance out); 3+ on clothes = collar.
-  out.collar = {};
-  const sideCols = [];
+  out.L = res[-1].edge; out.R = res[1].edge; out.nyL = res[-1].y; out.nyR = res[1].y;
+  // Collar check (v9e/v10, see Backlog B72/B74/B76): fabric just above the neck at fixed spots, then what the pendant lies on.
+  const sideCols = [], nyCollar = -(p.sm.y - p.mouth.y) * 0.31; // v10b: the height it was tested at
   for (const s of [-1, 1]) {
-    let hits = 0; const e0 = s < 0 ? out.L : out.R;
+    let hits = 0; const e0 = Math.max(base, res[s].edge + p.sw * 0.015); // v10c: at the neck's outline (or the v8 width, if wider)
     for (const up of [0.03, 0.06]) for (const f of [0.9, 1.0, 1.1]) {
-      const x = s * f * e0, y = ny - up * p.sw, q = {x: p.sm.x + x * ca - y * sa, y: p.sm.y + x * sa + y * ca};
-      if (catAt(q.x, q.y, w, h) === 4) { hits++; const c = colorAt(q.x, q.y, w, h); if (c) sideCols.push(c); }
+      const x = s * f * e0, y = nyCollar - up * p.sw, q = {x: p.sm.x + x * ca - y * sa, y: p.sm.y + x * sa + y * ca};
+      if (catAt(q.x, q.y, w, h) === 4) {
+        hits++;
+        // v10c: read the COLOR 15% further in, on the fabric itself (at the outline it blends with a bright window behind)
+        const x2 = x * 0.85, q2 = {x: p.sm.x + x2 * ca - y * sa, y: p.sm.y + x2 * sa + y * ca};
+        if (catAt(q2.x, q2.y, w, h) === 4) { const c = colorAt(q2.x, q2.y, w, h); if (c) sideCols.push(c); }
+      }
     }
     (out.collarHits = out.collarHits || {})[s] = hits;
   }
-  // A shirt has its collar on BOTH sides: one clear side (3+ of 6) or 4+ hits across both sides = collar on both.
-  // Tested Oct 18: tee photos scored 0 of 6 on every side; the painted-collar test scored 3 and 1.
-  // v10: any fabric above (2+ of 12 spots) makes it a candidate; the pendant-spot test below decides. Tested Oct 18:
-  // a tee scored 3 and a blouse 2, so counting alone cannot tell them apart; what the pendant lies on can.
+  // Any fabric above (2+ of 12 spots) makes it a candidate; what the PENDANT lies on decides:
+  //  bare skin = open collar (Kristin's coral blouse) -> collar; fabric of a DIFFERENT color than the side fabric = an outer
+  //  layer (white jacket over a navy top) -> collar; SAME color = the same garment (a tee's neck band) -> no collar.
   const ch = out.collarHits, candidate = ch[-1] + ch[1] >= 2;
-  // v10 (Kristin, Oct 18: on her navy crew-neck tee "it seems to be recognizing the neck band"): fabric above the chain
-  // start is not enough. Look at what the PENDANT lies on (center, at the pendant's height):
-  //  - bare skin there = an open collar (her coral blouse) -> collar, chain goes under it;
-  //  - fabric there of a DIFFERENT color than the side fabric = an outer layer (white jacket over a navy top) -> collar;
-  //  - fabric of the SAME color = the same garment (a tee's neck band) -> no collar, chain stays on top.
   let both = false; out.centerColor = null; out.collarWhy = candidate ? "" : "no fabric above";
   if (candidate) {
-    const py = p.sw * (DROP[length] + nudge), q = {x: p.sm.x - py * sa, y: p.sm.y + py * ca};
-    const cc = catAt(q.x, q.y, w, h), col = colorAt(q.x, q.y, w, h);
+    // v10c: a FIXED spot mid-chest (the 18-20 in pendant height + 0.05), not the chosen length: a 16-18 in pendant can sit
+    // right on a tee's small scoop of skin (Kristin's navy tee), and the answer must not flip when the length changes.
+    const py = p.sw * (DROP[19] + 0.05), q = {x: p.sm.x - py * sa, y: p.sm.y + py * ca};
+    // v10b: a ring of 9 spots, majority vote (a necklace the person already wears can sit right on the spot)
+    const votes = {}; for (const [ox, oy] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]) { const c = catAt(q.x + ox * p.sw * 0.05, q.y + oy * p.sw * 0.05, w, h); votes[c] = (votes[c] || 0) + 1; }
+    const skinV = (votes[2] || 0) + (votes[3] || 0), clothV = votes[4] || 0; out.votes = votes;
+    const cc = skinV >= clothV && skinV > 0 ? 2 : (clothV > 0 ? 4 : -1), col = colorAt(q.x, q.y, w, h);
     const side = sideCols.length ? sideCols.reduce((a, c) => [a[0] + c[0], a[1] + c[1], a[2] + c[2]], [0, 0, 0]).map((v) => v / sideCols.length) : null;
     if (isSkin(cc)) { both = true; out.collarWhy = "open collar"; }
     else if (cc === 4 && side && col) {
@@ -251,19 +271,11 @@ function neckEdges(p, w, h) {
     } else out.collarWhy = "unclear";
   }
   out.collar = {"-1": both, "1": both};
-  // v9g (Kristin, Oct 18, coral open-collar blouse: "not recognizing the collar"): the collar WAS found, but the chain
-  // started on bare skin inside the collar's open V, so nothing covered it. Her real chain slides under the collar's
-  // inner edge. So with a collar, where the skin ends at fabric, start the chain 0.035 x shoulder width past that edge,
-  // under the fabric (the collar is then drawn over it).
-  if (both && !neckSkin) { out.L = base * 1.15; out.R = base * 1.15; } // high collar right at the neck: tuck just past it
-  if (both) for (const s of [-1, 1]) {
-    const r = res[s]; if (r.stopCat !== 4 || r.edge < p.sw * 0.07 || r.edge > p.sw * 0.3) continue;
-    const under = r.edge + p.sw * 0.035;
-    if (s < 0) out.L = under; else out.R = under;
-  }
+  // (v9g's "start under the collar edge" is no longer needed: the chain now runs through the collar to the neck outline,
+  // and the collar is drawn over its top part.)
   out.raw = [+(res[-1].edge / p.sw).toFixed(3), res[-1].stopCat, +(res[1].edge / p.sw).toFixed(3), res[1].stopCat];
   const nm = (c) => ({0: "edge", 1: "hair", 4: "fabric"})[c] || "other";
-  out.how = neckSkin ? `seg L:${nm(res[-1].stopCat)} R:${nm(res[1].stopCat)}` : "neck covered";
+  out.how = `${neckSkin ? "" : "covered neck · "}L:${res[-1].met ? "meets shirt" : nm(res[-1].stopCat)} R:${res[1].met ? "meets shirt" : nm(res[1].stopCat)}`;
   return out;
 }
 
@@ -296,14 +308,18 @@ function place(lm, w, h) {
     ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
     fit = "shoulders";
   } else return null;
-  const neckY = sm.y - (sm.y - mouth.y) * 0.31; // v8: MEASURED from Kristin's real necklace in the test photo (chain meets the neck at 0.31)
+  // v10b (Kristin, Oct 18: the chain "just stops around my shirt... it should be where the top of my shoulders is"):
+// the chain now starts higher, at the side of the neck where it meets the top of the shoulders (0.56 ear-widths below
+// the mouth), and neckEdges lifts it above a high neck band if needed.
+const neckY = sm.y - (sm.y - mouth.y) * 0.45;
   window.__tryonDebug = {earMid: [Math.round((le.x + re.x) / 2), Math.round((le.y + re.y) / 2)], fit, earW: Math.round(earW), sw: Math.round(sw), ratio: +(earW / sw).toFixed(3), mouthToSm: +((sm.y - mouth.y) / sw).toFixed(3), sm: [Math.round(sm.x), Math.round(sm.y)], mouth: [Math.round(mouth.x), Math.round(mouth.y)], ang: +ang.toFixed(3), w, h};
   const p = {sm, mouth, sw, ang, neckY, earW, fit};
-  const e = neckEdges(p, w, h); p.L = e.L; p.R = e.R; p.how = e.how;
+  const e = neckEdges(p, w, h); p.L = e.L; p.R = e.R; p.how = e.how; if (e.neckY !== undefined) p.neckY = e.neckY;
+  p.nyL = e.nyL !== undefined ? e.nyL : p.neckY - p.sm.y; p.nyR = e.nyR !== undefined ? e.nyR : p.neckY - p.sm.y;
   if (window.__dbg && window.__dbg.forceHalf) { p.L = p.R = sw * window.__dbg.forceHalf; } // debug only
   p.collar = e.collar || {}; p.centerColor = e.centerColor; p.collarWhy = e.collarWhy;
   if (window.__dbg && window.__dbg.forceCollar) p.collar = {"-1": true, "1": true}; // debug only
-  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist;
+  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist; window.__tryonDebug.votes = e.votes; window.__tryonDebug.hits = e.collarHits;
   window.__tryonDebug.L = +(e.L / sw).toFixed(3); window.__tryonDebug.R = +(e.R / sw).toFixed(3); window.__tryonDebug.how = e.how; window.__tryonDebug.raw = e.raw;
   return p;
 }
@@ -326,7 +342,7 @@ function smoothen(p) {
   let collar = smooth.collar, centerColor = smooth.centerColor, collarWhy = smooth.collarWhy;
   if (!!(p.collar && p.collar[1]) !== !!(smooth.collar && smooth.collar[1])) { if (++collarVotes >= 6) { collar = p.collar; centerColor = p.centerColor; collarWhy = p.collarWhy; collarVotes = 0; } }
   else { collarVotes = 0; centerColor = p.centerColor || centerColor; }
-  smooth = {...p, sm: smNew, sw: swNew, ang: lerp(smooth.ang, p.ang, 0.08), neckOff, neckY: smNew.y + neckOff, earW: lerp(smooth.earW, p.earW, 0.06), L: lerp(smooth.L, p.L, 0.08), R: lerp(smooth.R, p.R, 0.08), collar, centerColor, collarWhy};
+  smooth = {...p, sm: smNew, sw: swNew, ang: lerp(smooth.ang, p.ang, 0.08), neckOff, neckY: smNew.y + neckOff, earW: lerp(smooth.earW, p.earW, 0.06), L: lerp(smooth.L, p.L, 0.08), R: lerp(smooth.R, p.R, 0.08), nyL: lerp(smooth.nyL ?? p.nyL, p.nyL, 0.08), nyR: lerp(smooth.nyR ?? p.nyR, p.nyR, 0.08), collar, centerColor, collarWhy};
   return smooth;
 }
 
@@ -451,7 +467,7 @@ function strokeChain(sx, ny, a, sw, pw) {
 function drawNecklace(p) {
   const {sm, sw, ang, neckY} = p;
   ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
-  const ny = neckY - sm.y, py = sw * (DROP[length] + nudge), r = sw * 0.023; /* v9: Rise size, about 0.065 x shoulder width across the sun points */
+  const ny0 = neckY - sm.y, nyL = p.nyL ?? ny0, nyR = p.nyR ?? ny0, ny = Math.min(nyL, nyR), py = sw * (DROP[length] + nudge), r = sw * 0.023; /* v9: Rise size, about 0.065 x shoulder width across the sun points */
   // v9: each side starts at its own neck edge (p.L / p.R) instead of one fixed width.
   const left = -(p.L ?? sw * 0.17), right = (p.R ?? sw * 0.17);
   ctx.lineCap = "round";
@@ -461,14 +477,14 @@ function drawNecklace(p) {
   if (P && P.img.complete && P.img.naturalWidth) {
     const W = sw * P.w, H = W * P.img.naturalHeight / P.img.naturalWidth, x0 = -W / 2, y0 = py; /* v8: chain meets the pendant top at py */
     const pts = P.attach.map(([fx, fy]) => ({x: x0 + fx * W, y: y0 + fy * H}));
-    strokeChain(left, ny, pts[0], sw, W); strokeChain(right, ny, pts[1], sw, W);
+    strokeChain(left, nyL, pts[0], sw, W); strokeChain(right, nyR, pts[1], sw, W); // v10c: each side from its own neck-meets-shirt point
     ctx.save(); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
     ctx.shadowColor = "rgba(40,25,10,0.4)"; ctx.shadowBlur = sw * 0.012; ctx.shadowOffsetY = sw * 0.006; // v9: soft shadow on the skin
     ctx.drawImage(P.img, x0, y0, W, H); ctx.restore();
     box = {x: x0, y: y0, w: W, h: H};
   } else {
     const bailY = py; /* v8: chain meets the bail at py; the disc hangs below it */
-    strokeChain(left, ny, {x: 0, y: bailY}, sw); strokeChain(right, ny, {x: 0, y: bailY}, sw);
+    strokeChain(left, nyL, {x: 0, y: bailY}, sw); strokeChain(right, nyR, {x: 0, y: bailY}, sw);
     drawPendant(0, py + r * 1.42 + r * 0.28, r); /* loop top sits at py */
     box = {x: -r * 1.5, y: py, w: r * 3, h: r * 3.3};
   }
@@ -564,7 +580,7 @@ function render(source, w, h, ts) {
   }
   ctx.restore();
   fpsN++; const now = performance.now(); if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
-  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length} in · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)} · fit ${p ? p.fit : "—"} · neck ${p ? p.how : "—"}${used && used.collar && used.collar[1] ? " · collar (" + used.collarWhy + ")" : (used && used.collarWhy ? " · no collar (" + used.collarWhy + ")" : "")}${segmenter ? "" : " · no segmenter"}`;
+  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length - 1}–${length + 1} in (shown at ${length}) · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)} · fit ${p ? p.fit : "—"} · neck ${p ? p.how : "—"}${used && used.collar && used.collar[1] ? " · collar (" + used.collarWhy + ")" : (used && used.collarWhy ? " · no collar (" + used.collarWhy + ")" : "")}${segmenter ? "" : " · no segmenter"}`;
   if (mode === "photo") say(p ? "Necklace placed on the photo." : "No face or shoulders found in this photo. Try one showing your neck.");
   window.__tryonLast = {found: !!p, frames, firstFoundMs, debug: window.__tryonDebug, scale: S};
 }
@@ -602,7 +618,7 @@ async function runPhoto() {
 window.__tryonPhoto = async (url) => { srcImg.src = url; await srcImg.decode(); await runPhoto(); return window.__tryonLast; };
 window.__setOpts = (o) => { if (o.length) length = o.length; if (o.pendant) pendant = o.pendant; if (o.nudge !== undefined) nudge = o.nudge; };
 
-for (const n of [16, 18, 20, 22]) $("len" + n).onclick = () => {
+for (const n of [17, 19, 21, 23]) $("len" + n).onclick = () => {
   length = n; document.querySelectorAll(".len").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "len" + n)));
   if (mode === "photo") runPhoto();
 };
