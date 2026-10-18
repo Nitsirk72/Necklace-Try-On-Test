@@ -84,20 +84,24 @@ function drawPendant(x, y, r) {
 function place(lm, w, h) {
   // Pose landmarks: 0 nose, 9/10 mouth corners, 11/12 shoulders (normalized 0-1).
   const P = (i) => ({x: lm[i].x * w, y: lm[i].y * h, v: lm[i].visibility ?? 1});
-  const ls = P(11), rs = P(12), ml = P(9), mr = P(10);
+  const ls = P(11), rs = P(12), ml = P(9), mr = P(10), le = P(7), re = P(8);
   if (Math.min(ls.v, rs.v) < 0.5) return null;
   const sm = {x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2};
   const mouth = {x: (ml.x + mr.x) / 2, y: (ml.y + mr.y) / 2};
   const sw = Math.hypot(ls.x - rs.x, ls.y - rs.y);
   const ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
   const neckY = sm.y - (sm.y - mouth.y) * 0.46; // v4 (Kristin, Oct 18): chain rises higher up the neck (was 0.32)
-  return {sm, mouth, sw, ang, neckY};
+  // v5 (Kristin, Oct 18: "not really finding the neck"): the tracker has no neck-edge points, so estimate
+  // neck width from the ear-to-ear distance (head width), which tracks the neck far better than the shoulders.
+  const earW = Math.hypot(le.x - re.x, le.y - re.y);
+  window.__tryonDebug = {earW: Math.round(earW), sw: Math.round(sw), ratio: +(earW / sw).toFixed(2)};
+  return {sm, mouth, sw, ang, neckY, earW};
 }
 
 function smoothen(p) {
   if (!smooth) { smooth = p; return p; }
   const a = 0.35, m = (u, v) => u + (v - u) * a;
-  smooth = {sm: {x: m(smooth.sm.x, p.sm.x), y: m(smooth.sm.y, p.sm.y)}, mouth: p.mouth, sw: m(smooth.sw, p.sw), ang: m(smooth.ang, p.ang), neckY: m(smooth.neckY, p.neckY)};
+  smooth = {sm: {x: m(smooth.sm.x, p.sm.x), y: m(smooth.sm.y, p.sm.y)}, mouth: p.mouth, sw: m(smooth.sw, p.sw), ang: m(smooth.ang, p.ang), neckY: m(smooth.neckY, p.neckY), earW: m(smooth.earW, p.earW)};
   return smooth;
 }
 
@@ -115,9 +119,9 @@ window.__chainNeverRises = () => {
   return true;
 };
 function drawNecklace(p) {
-  const {sm, sw, ang, neckY} = p;
+  const {sm, sw, ang, neckY, earW} = p;
   ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
-  const ny = neckY - sm.y, half = sw * 0.12, /* v4: narrower, at the sides of the neck (was 0.17) */ py = sw * (DROP[length] + nudge), r = sw * 0.075;
+  const ny = neckY - sm.y, half = Math.min(sw * 0.2, Math.max(sw * 0.1, earW * 0.45)), /* v5: neck half-width from ear distance, kept within sane bounds */ py = sw * (DROP[length] + nudge), r = sw * 0.075;
   ctx.strokeStyle = "#D8B66A"; ctx.lineWidth = Math.max(1.5, sw * 0.008); ctx.lineCap = "round";
   ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = sw * 0.01;
   // v3 (Kristin, Oct 18): the pendant is the LOWEST point. Each side runs only downhill from the neck to the bail.
