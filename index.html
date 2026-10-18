@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Necklace Try-On Test</title>
+<style>
+/* Feasibility test for a Love Talla try-on. Not a client deliverable. Stand-in pendant until real cutouts exist. */
+:root{--bg:#F7F2EA;--fg:#1A1614;--muted:#6E655C;--line:#E4DCD0;--accent:#2E4A3B;--gold:#C9A35A;
+  --sans:"Helvetica Neue",Helvetica,Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 var(--sans)}
+main{max-width:720px;margin:0 auto;padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);font-size:14px;margin:0 0 12px}
+.stage{position:relative;width:100%;background:#000;border-radius:12px;overflow:hidden;aspect-ratio:3/4}
+.stage video,.stage img.src{display:none}
+.stage canvas{width:100%;height:100%;display:block;object-fit:contain}
+.controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+button,label.btn{font:600 15px var(--sans);padding:10px 14px;border-radius:999px;border:1px solid var(--accent);background:var(--accent);color:var(--bg);cursor:pointer}
+button.ghost,label.btn{background:transparent;color:var(--accent)}
+button[aria-pressed="true"]{background:var(--accent);color:var(--bg)}
+button:focus-visible,label.btn:focus-within{outline:3px solid var(--gold);outline-offset:2px}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+.status{font-size:14px;color:var(--muted);min-height:1.4em}
+.stats{font:13px/1.4 ui-monospace,Menlo,monospace;color:var(--muted);font-variant-numeric:tabular-nums}
+.shot{margin-top:12px}.shot img{width:100%;border-radius:12px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Necklace try-on test</h1>
+  <p class="sub">Feasibility check for Love Talla. The pendant is a stand-in drawing until real necklace photos are cut out.</p>
+  <div class="stage"><video id="video" playsinline muted></video><img id="srcimg" class="src" alt=""><canvas id="canvas" width="720" height="960"></canvas></div>
+  <div class="controls">
+    <button id="camBtn">Start camera</button>
+    <label class="btn" for="file">Use a photo<input id="file" type="file" accept="image/*"></label>
+    <button id="len16" class="ghost len" aria-pressed="false">16 in</button>
+    <button id="len18" class="ghost len" aria-pressed="true">18 in</button>
+    <button id="len20" class="ghost len" aria-pressed="false">20 in</button>
+    <button id="snap" class="ghost">Take photo</button>
+  </div>
+  <div class="status" id="status">Loading the tracker…</div>
+  <div class="stats" id="stats"></div>
+  <div class="shot" id="shot" hidden><p class="sub">Press and hold the picture to save it.</p><img id="shotImg" alt="Try-on photo"></div>
+</main>
+<script type="module">
+import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+const $ = (id) => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d"), statusEl = $("status"), statsEl = $("stats");
+const srcImg = $("srcimg");
+let landmarker = null, mode = null, lastT = -1, smooth = null, found = 0, frames = 0, firstFoundMs = null, startMs = 0, fpsT = performance.now(), fpsN = 0, fps = 0;
+// Chain length -> how far below the shoulder line the pendant hangs, as a share of shoulder width.
+const DROP = {16: 0.02, 18: 0.13, 20: 0.26};
+let length = 18;
+const say = (t) => { statusEl.textContent = t; };
+
+async function init() {
+  try {
+    const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    const opts = (delegate) => ({baseOptions: {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate}, runningMode: "IMAGE", numPoses: 1});
+    try { landmarker = await PoseLandmarker.createFromOptions(files, opts("GPU")); }
+    catch (e) { landmarker = await PoseLandmarker.createFromOptions(files, opts("CPU")); }
+    say("Tracker ready. Start the camera or use a photo.");
+    window.__tryonReady = true;
+  } catch (e) { say("The tracker could not load: " + e.message); window.__tryonError = String(e); }
+}
+
+// Stand-in pendant: a small gold disc with fingerprint-like ridges (Love Talla engraves real fingerprints).
+function drawPendant(x, y, r) {
+  ctx.save(); ctx.translate(x, y);
+  const g = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+  g.addColorStop(0, "#F3DFA6"); g.addColorStop(0.6, "#C9A35A"); g.addColorStop(1, "#8E6B2E");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(90,62,20,0.55)"; ctx.lineWidth = Math.max(1, r * 0.04);
+  for (let k = 1; k <= 5; k++) { ctx.beginPath(); ctx.ellipse(0, r * 0.05, r * 0.14 * k, r * 0.11 * k, 0.2, Math.PI * 1.05, Math.PI * 2.95); ctx.stroke(); }
+  ctx.fillStyle = "#C9A35A"; ctx.beginPath(); ctx.arc(0, -r * 1.12, r * 0.14, 0, Math.PI * 2); ctx.fill(); // bail
+  ctx.restore();
+}
+
+function place(lm, w, h) {
+  // Pose landmarks: 0 nose, 9/10 mouth corners, 11/12 shoulders (normalized 0-1).
+  const P = (i) => ({x: lm[i].x * w, y: lm[i].y * h, v: lm[i].visibility ?? 1});
+  const ls = P(11), rs = P(12), ml = P(9), mr = P(10);
+  if (Math.min(ls.v, rs.v) < 0.5) return null;
+  const sm = {x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2};
+  const mouth = {x: (ml.x + mr.x) / 2, y: (ml.y + mr.y) / 2};
+  const sw = Math.hypot(ls.x - rs.x, ls.y - rs.y);
+  const ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
+  const neckY = sm.y - (sm.y - mouth.y) * 0.32; // base of the neck, between shoulders and chin
+  return {sm, mouth, sw, ang, neckY};
+}
+
+function smoothen(p) {
+  if (!smooth) { smooth = p; return p; }
+  const a = 0.35, m = (u, v) => u + (v - u) * a;
+  smooth = {sm: {x: m(smooth.sm.x, p.sm.x), y: m(smooth.sm.y, p.sm.y)}, mouth: p.mouth, sw: m(smooth.sw, p.sw), ang: m(smooth.ang, p.ang), neckY: m(smooth.neckY, p.neckY)};
+  return smooth;
+}
+
+function drawNecklace(p) {
+  const {sm, sw, ang, neckY} = p;
+  ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
+  const ny = neckY - sm.y, half = sw * 0.17, py = sw * DROP[length], r = sw * 0.075;
+  ctx.strokeStyle = "#D8B66A"; ctx.lineWidth = Math.max(1.5, sw * 0.008); ctx.lineCap = "round";
+  ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = sw * 0.01;
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * half, ny); ctx.quadraticCurveTo(s * half * 0.9, py - r * 0.6, 0, py - r * 1.2); ctx.stroke(); }
+  ctx.shadowBlur = 0; drawPendant(0, py, r);
+  ctx.restore();
+}
+
+function render(source, w, h, ts) {
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  ctx.save();
+  if (mode === "camera") { ctx.translate(w, 0); ctx.scale(-1, 1); } // mirror like a real mirror
+  ctx.drawImage(source, 0, 0, w, h);
+  let res = null;
+  try { res = mode === "camera" ? landmarker.detectForVideo(source, ts) : landmarker.detect(source); } catch (e) { say("Tracking error: " + e.message); }
+  frames++;
+  const lm = res && res.landmarks && res.landmarks[0];
+  const p = lm ? place(lm, w, h) : null;
+  if (p) { found++; if (firstFoundMs === null) firstFoundMs = performance.now() - startMs; drawNecklace(mode === "camera" ? smoothen(p) : p); }
+  ctx.restore();
+  fpsN++; const now = performance.now(); if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
+  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"}`;
+  if (mode === "photo") say(p ? "Necklace placed on the photo." : "No neck and shoulders found in this photo. Try one showing both shoulders.");
+  window.__tryonLast = {found: !!p, frames, firstFoundMs};
+}
+
+function loop() {
+  if (mode !== "camera") return;
+  if (video.readyState >= 2 && video.currentTime !== lastT) { lastT = video.currentTime; render(video, video.videoWidth, video.videoHeight, performance.now()); }
+  requestAnimationFrame(loop);
+}
+
+$("camBtn").onclick = async () => {
+  if (!landmarker) { say("Tracker still loading. Try again in a moment."); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user", width: {ideal: 1280}, height: {ideal: 960}}, audio: false});
+    video.srcObject = stream; await video.play();
+    await landmarker.setOptions({runningMode: "VIDEO"});
+    mode = "camera"; smooth = null; found = frames = 0; firstFoundMs = null; startMs = performance.now();
+    say("Camera on. Stand back so both shoulders show.");
+    loop();
+  } catch (e) { say("Camera not available here (" + e.name + "). Use a photo instead, or open this page over https."); }
+};
+
+$("file").onchange = async (e) => {
+  const f = e.target.files[0]; if (!f || !landmarker) return;
+  srcImg.src = URL.createObjectURL(f); await srcImg.decode(); runPhoto();
+};
+async function runPhoto() {
+  await landmarker.setOptions({runningMode: "IMAGE"});
+  mode = "photo"; found = frames = 0; firstFoundMs = null; startMs = performance.now();
+  const s = Math.min(1, 1600 / Math.max(srcImg.naturalWidth, srcImg.naturalHeight));
+  render(srcImg, Math.round(srcImg.naturalWidth * s), Math.round(srcImg.naturalHeight * s));
+}
+window.__tryonPhoto = async (url) => { srcImg.src = url; await srcImg.decode(); await runPhoto(); return window.__tryonLast; };
+
+for (const n of [16, 18, 20]) $("len" + n).onclick = () => {
+  length = n; document.querySelectorAll(".len").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "len" + n)));
+  if (mode === "photo") runPhoto();
+};
+$("snap").onclick = () => { $("shotImg").src = canvas.toDataURL("image/jpeg", 0.92); $("shot").hidden = false; };
+init();
+</script>
+</body>
+</html>
