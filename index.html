@@ -243,8 +243,11 @@ let pendant = "rise"; // v9: the Rise first (Kristin, Oct 18)
 // v9 (Kristin, Oct 18, after looking at lovetalla.com model photos): real chains are NOT stiff U curves. Gravity pulls
 // each side almost STRAIGHT from the neck to the pendant (a narrow V, pendant = lowest point). Only a slight bow near
 // the neck where the chain lies over the collarbone. Control point = 30% down the straight line, nudged 2% outward.
+// v9d (Kristin, Oct 18: "looks rigid, give it a little curve"): MEASURED on Kristin's real chain in the calibration
+// photo: it bows outward about 4% of its length, most near the middle (Love Talla model photos match). A quadratic
+// bends half as far as its control point, so the control point sits 8% outward at 45% of the way down.
 function chainCtrl(sx, ny, ex, ey) {
-  const t = 0.3, bow = 0.02 * Math.hypot(ex - sx, ey - ny), dir = Math.sign(sx - ex) || 1;
+  const t = 0.45, bow = 0.08 * Math.hypot(ex - sx, ey - ny), dir = Math.sign(sx - ex) || 1;
   return {x: sx + (ex - sx) * t + dir * bow, y: ny + (ey - ny) * t};
 }
 // Check (Oct 18): sample each side; the chain must only go down toward the pendant. Returns true when it does.
@@ -260,14 +263,25 @@ window.__chainNeverRises = () => {
 };
 // v9c check: run on the last placement; the chain must reach at least 0.15 x shoulder width each side at the neck.
 window.__neckWideEnough = () => { const d = window.__tryonDebug; return !!d && d.L >= 0.15 && d.R >= 0.15; };
-// v9 check: each side must stay within 3% of a straight line from the neck to the pendant (no stiff U).
+// v9d check: each side bows outward 2.5-6% of its length (the real chain measured ~4%): not a stiff U, not a rigid rod.
+window.__chainGentleCurve = () => {
+  for (const [sx, ny, ex, ey] of [[60, -40, 0, 30], [-120, -80, -20, 10], [200, -150, 35, 90], [100, -60, 0, 80]]) {
+    const c = chainCtrl(sx, ny, ex, ey), L = Math.hypot(ex - sx, ey - ny); let mx = 0;
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const x = (1 - t) * (1 - t) * sx + 2 * (1 - t) * t * c.x + t * t * ex, y = (1 - t) * (1 - t) * ny + 2 * (1 - t) * t * c.y + t * t * ey;
+      mx = Math.max(mx, Math.abs((ey - ny) * x - (ex - sx) * y + ex * ny - ey * sx) / L);
+    }
+    if (mx < 0.025 * L || mx > 0.06 * L) return false;
+  }
+  return true;
+};
 window.__chainNearlyStraight = () => {
   for (const [sx, ny, ex, ey] of [[60, -40, 0, 30], [-120, -80, -20, 10], [200, -150, 35, 90], [100, -60, 0, 80]]) {
     const c = chainCtrl(sx, ny, ex, ey), L = Math.hypot(ex - sx, ey - ny);
     for (let t = 0; t <= 1.0001; t += 0.05) {
       const x = (1 - t) * (1 - t) * sx + 2 * (1 - t) * t * c.x + t * t * ex, y = (1 - t) * (1 - t) * ny + 2 * (1 - t) * t * c.y + t * t * ey;
       const dist = Math.abs((ey - ny) * x - (ex - sx) * y + ex * ny - ey * sx) / L;
-      if (dist > 0.03 * L) return false;
+      if (dist > 0.06 * L) return false; // v9d: allows the measured ~4% bow
     }
   }
   return true;
@@ -289,6 +303,8 @@ function drawLinks(sx, ny, c, a, w) {
   for (let d = pitch / 2; d < total; d += pitch, k++) {
     const p = at(d);
     ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.ang);
+    // v9d: real links twist and catch light unevenly; vary each link's brightness a little (fixed pattern, no flicker)
+    const v = 0.82 + 0.18 * Math.abs(Math.sin(k * 12.9898 + 4.1)); ctx.globalAlpha = v;
     if (k % 2 === 0) { // face-on ring
       ctx.lineWidth = w * 0.28; ctx.strokeStyle = "#B48A2C";
       ctx.beginPath(); ctx.ellipse(0, 0, pitch * 0.62, w * 0.42, 0, 0, Math.PI * 2); ctx.stroke();
