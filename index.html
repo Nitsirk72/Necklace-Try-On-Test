@@ -59,7 +59,13 @@ let landmarker = null, segmenter = null, mode = null, lastT = -1, smooth = null,
 // Chain length -> how far below the shoulder line the pendant hangs, as a share of shoulder width.
 // v8: MEASURED from Kristin's real necklace in the test photo: where the chain meets the pendant sits 0.125 x shoulder width
 // below the shoulder line (taken as 18 in). Each 2 in of chain adds about 0.07. DROP now marks the attach point, not the pendant center.
-const DROP = {16: 0.055, 18: 0.125, 20: 0.195, 22: 0.265}; // v9: 22 in added (the Rise sells 16-18 up to 22-24 in)
+// v9f (Kristin, Oct 18: her calibration necklace is 44 cm = 17.32 in, not 18 as assumed): the MEASURED anchor 0.125 belongs
+// to 17.32 in. Each inch of chain drops the pendant ~0.5 in (half goes to each near-straight side) = 0.035 x shoulder width
+// (shoulders ~14.5 in, estimate). DROP(L) = 0.125 + 0.035 x (L - 17.32).
+const ANCHOR_IN = 44 / 2.54, ANCHOR_DROP = 0.125, PER_IN = 0.035;
+const DROP = {}; for (const L of [16, 18, 20, 22]) DROP[L] = +(ANCHOR_DROP + PER_IN * (L - ANCHOR_IN)).toFixed(3);
+window.__lengthAnchorOk = () => Math.abs(ANCHOR_DROP + PER_IN * (44 / 2.54 - ANCHOR_IN) - 0.125) < 1e-9 && DROP[16] < DROP[18] && DROP[18] < DROP[20] && DROP[20] < DROP[22];
+window.__drops = DROP; // debug
 // v9 close-up fallback: body proportions MEASURED on the calibration photo (ear-to-ear width and mouth-to-shoulder-line
 // distance, as shares of shoulder width). Used only when the shoulders are out of frame.
 // closeEarPerSw: in the 2 close-up tests the ears read about 9% narrower than in the full photos, so close-ups use 0.36.
