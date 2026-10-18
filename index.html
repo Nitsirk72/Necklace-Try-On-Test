@@ -38,6 +38,8 @@ input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
     <button id="len16" class="ghost len" aria-pressed="false">16 in</button>
     <button id="len18" class="ghost len" aria-pressed="true">18 in</button>
     <button id="len20" class="ghost len" aria-pressed="false">20 in</button>
+    <button id="up" class="ghost">Higher</button>
+    <button id="down" class="ghost">Lower</button>
     <button id="snap" class="ghost">Take photo</button>
   </div>
   <div class="status" id="status">Loading the tracker…</div>
@@ -51,7 +53,8 @@ const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d"), s
 const srcImg = $("srcimg");
 let landmarker = null, mode = null, lastT = -1, smooth = null, found = 0, frames = 0, firstFoundMs = null, startMs = 0, fpsT = performance.now(), fpsN = 0, fps = 0;
 // Chain length -> how far below the shoulder line the pendant hangs, as a share of shoulder width.
-const DROP = {16: 0.02, 18: 0.13, 20: 0.26};
+const DROP = {16: -0.07, 18: 0.04, 20: 0.17}; // v2: raised ~0.09 after Kristin's iPhone test ("hung a little low")
+let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
 let length = 18;
 const say = (t) => { statusEl.textContent = t; };
 
@@ -101,7 +104,7 @@ function smoothen(p) {
 function drawNecklace(p) {
   const {sm, sw, ang, neckY} = p;
   ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
-  const ny = neckY - sm.y, half = sw * 0.17, py = sw * DROP[length], r = sw * 0.075;
+  const ny = neckY - sm.y, half = sw * 0.17, py = sw * (DROP[length] + nudge), r = sw * 0.075;
   ctx.strokeStyle = "#D8B66A"; ctx.lineWidth = Math.max(1.5, sw * 0.008); ctx.lineCap = "round";
   ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = sw * 0.01;
   for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * half, ny); ctx.quadraticCurveTo(s * half * 0.9, py - r * 0.6, 0, py - r * 1.2); ctx.stroke(); }
@@ -122,7 +125,7 @@ function render(source, w, h, ts) {
   if (p) { found++; if (firstFoundMs === null) firstFoundMs = performance.now() - startMs; drawNecklace(mode === "camera" ? smoothen(p) : p); }
   ctx.restore();
   fpsN++; const now = performance.now(); if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
-  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"}`;
+  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length} in · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)}`;
   if (mode === "photo") say(p ? "Necklace placed on the photo." : "No neck and shoulders found in this photo. Try one showing both shoulders.");
   window.__tryonLast = {found: !!p, frames, firstFoundMs};
 }
@@ -161,6 +164,8 @@ for (const n of [16, 18, 20]) $("len" + n).onclick = () => {
   length = n; document.querySelectorAll(".len").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "len" + n)));
   if (mode === "photo") runPhoto();
 };
+$("up").onclick = () => { nudge = Math.round((nudge - 0.03) * 100) / 100; if (mode === "photo") runPhoto(); };
+$("down").onclick = () => { nudge = Math.round((nudge + 0.03) * 100) / 100; if (mode === "photo") runPhoto(); };
 $("snap").onclick = () => { $("shotImg").src = canvas.toDataURL("image/jpeg", 0.92); $("shot").hidden = false; };
 init();
 </script>
