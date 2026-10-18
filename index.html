@@ -90,7 +90,7 @@ function place(lm, w, h) {
   const mouth = {x: (ml.x + mr.x) / 2, y: (ml.y + mr.y) / 2};
   const sw = Math.hypot(ls.x - rs.x, ls.y - rs.y);
   const ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
-  const neckY = sm.y - (sm.y - mouth.y) * 0.32; // base of the neck, between shoulders and chin
+  const neckY = sm.y - (sm.y - mouth.y) * 0.46; // v4 (Kristin, Oct 18): chain rises higher up the neck (was 0.32)
   return {sm, mouth, sw, ang, neckY};
 }
 
@@ -101,13 +101,29 @@ function smoothen(p) {
   return smooth;
 }
 
+// Control point for one side of the chain: a soft U that sags toward the pendant, never below it.
+function chainCtrl(half, ny, bailY) { return {x: half * 0.45, y: ny + (bailY - ny) * 0.85}; }
+// Check (Oct 18): sample each side; the chain must only go down toward the pendant. Returns true when it does.
+window.__chainNeverRises = () => {
+  for (const [half, ny, bailY] of [[60, -40, 30], [120, -80, 10], [200, -150, 90], [80, -20, -5]]) {
+    const c = chainCtrl(half, ny, bailY); let prev = -Infinity;
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const y = (1 - t) * (1 - t) * ny + 2 * (1 - t) * t * c.y + t * t * bailY;
+      if (y < prev - 1e-9 || y > bailY + 1e-9) return false; prev = y;
+    }
+  }
+  return true;
+};
 function drawNecklace(p) {
   const {sm, sw, ang, neckY} = p;
   ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
-  const ny = neckY - sm.y, half = sw * 0.17, py = sw * (DROP[length] + nudge), r = sw * 0.075;
+  const ny = neckY - sm.y, half = sw * 0.12, /* v4: narrower, at the sides of the neck (was 0.17) */ py = sw * (DROP[length] + nudge), r = sw * 0.075;
   ctx.strokeStyle = "#D8B66A"; ctx.lineWidth = Math.max(1.5, sw * 0.008); ctx.lineCap = "round";
   ctx.shadowColor = "rgba(0,0,0,0.35)"; ctx.shadowBlur = sw * 0.01;
-  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * half, ny); ctx.quadraticCurveTo(s * half * 0.9, py - r * 0.6, 0, py - r * 1.2); ctx.stroke(); }
+  // v3 (Kristin, Oct 18): the pendant is the LOWEST point. Each side runs only downhill from the neck to the bail.
+  // A quadratic curve never rises when its control point's height sits between its two ends, so keep it there.
+  const bailY = py - r * 1.2, ctrl = chainCtrl(half, ny, bailY);
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * half, ny); ctx.quadraticCurveTo(s * ctrl.x, ctrl.y, 0, bailY); ctx.stroke(); }
   ctx.shadowBlur = 0; drawPendant(0, py, r);
   ctx.restore();
 }
