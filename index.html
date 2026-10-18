@@ -69,7 +69,12 @@ window.__drops = DROP; // debug
 // v9 close-up fallback: body proportions MEASURED on the calibration photo (ear-to-ear width and mouth-to-shoulder-line
 // distance, as shares of shoulder width). Used only when the shoulders are out of frame.
 // closeEarPerSw: in the 2 close-up tests the ears read about 9% narrower than in the full photos, so close-ups use 0.36.
-const FACE = {earPerSw: 0.392, mouthToSm: 0.421, closeEarPerSw: 0.36};
+const FACE = {earPerSw: 0.392, mouthToSm: 0.398};
+// v10 (Kristin, Oct 18 live test: chain too short, swinging, pendant off to one side): the necklace is now anchored to the
+// FACE, not the shoulders. Shoulders lift when arms hold a phone and their points jump; the face is tracked steadily.
+// MEASURED on 4 photos of Kristin's real 44 cm necklace: the pendant hangs 1.24-1.39 (mean 1.335) ear-widths below the
+// mouth (shoulder anchor spread 0.09-0.19 shoulder widths, ~35%). sw is now a face-based unit: earW / 0.392 (calibration
+// ratio), and mouthToSm 0.398 makes a 44 cm chain land at 1.335 ear-widths below the mouth.
 let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
 let length = 18;
 const say = (t) => { statusEl.textContent = t; };
@@ -152,6 +157,25 @@ function segment(source, ts) {
   try { mode === "camera" ? segmenter.segmentForVideo(source, ts, readSeg) : segmenter.segment(source, readSeg); }
   catch (e) { seg = null; window.__segError = String(e); }
 }
+// v10: a small copy of the frame (192 px wide) to read colors from, for the collar test.
+const pxc = document.createElement("canvas"), pxx = pxc.getContext("2d", {willReadFrequently: true});
+let pxData = null, pxW = 0, pxH = 0;
+function grabPixels(source, w, h) {
+  pxW = 192; pxH = Math.round(192 * h / w);
+  if (pxc.width !== pxW || pxc.height !== pxH) { pxc.width = pxW; pxc.height = pxH; }
+  pxx.drawImage(source, 0, 0, pxW, pxH);
+  try { pxData = pxx.getImageData(0, 0, pxW, pxH).data; } catch (e) { pxData = null; }
+}
+function colorAt(x, y, w, h) {
+  if (!pxData) return null;
+  const cx = Math.round(x / w * pxW), cy = Math.round(y / h * pxH); let r = 0, g = 0, b = 0, n = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const X = cx + dx, Y = cy + dy; if (X < 0 || Y < 0 || X >= pxW || Y >= pxH) continue;
+    const i = (Y * pxW + X) * 4; r += pxData[i]; g += pxData[i + 1]; b += pxData[i + 2]; n++;
+  }
+  return n ? [r / n, g / n, b / n] : null;
+}
+const cdist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 // Class at a point given in source-image pixels.
 function catAt(x, y, w, h) {
   if (!seg) return -1;
@@ -172,9 +196,9 @@ function neckEdges(p, w, h) {
   // Start at the mouth's spot along the necklace line (more reliably on skin than the shoulder midpoint).
   const mdx = p.mouth.x - p.sm.x, mdy = p.mouth.y - p.sm.y, cx = mdx * ca + mdy * sa;
   const pt = (x) => ({x: p.sm.x + x * ca - ny * sa, y: p.sm.y + x * sa + ny * ca});
-  const c0 = pt(cx); if (!isSkin(catAt(c0.x, c0.y, w, h))) { out.how = "v8 width (neck not skin)"; return out; }
-  const step = Math.max(1, w / seg.mw * 0.5), maxD = p.sw * 0.45, res = {};
-  for (const s of [-1, 1]) {
+  const c0 = pt(cx), neckSkin = isSkin(catAt(c0.x, c0.y, w, h));
+  const step = Math.max(1, w / seg.mw * 0.5), maxD = p.sw * 0.45, res = {"-1": {edge: base, stopCat: -1}, "1": {edge: base, stopCat: -1}};
+  if (neckSkin) for (const s of [-1, 1]) {
     let d = 0, miss = 0, last = 0, stopCat = -1;
     while (d < maxD) {
       d += step; const q = pt(cx + s * d), c = catAt(q.x, q.y, w, h);
@@ -190,36 +214,56 @@ function neckEdges(p, w, h) {
     if (r.edge < p.sw * 0.07 || r.edge > p.sw * 0.3) return base; // not believable; keep v8
     return r.stopCat === 0 ? Math.max(r.edge, p.sw * 0.15) : Math.max(r.edge, base);
   };
-  out.L = pick(res[-1]); out.R = pick(res[1]);
+  if (neckSkin) { out.L = pick(res[-1]); out.R = pick(res[1]); }
   // v9e (Kristin, Oct 18: "stop at hair... can we also do that with collars?"): a COLLAR is shirt fabric standing up
   // beside the neck, ABOVE where the chain meets the neck. A crew-neck tee has only skin or hair there, so it is not a
   // collar and the chain stays on top of the shirt. Sample 6 spots per side just above the chain's start point
   // (0.03 and 0.06 x shoulder width up; 90/100/110% of its distance out); 3+ on clothes = collar.
   out.collar = {};
+  const sideCols = [];
   for (const s of [-1, 1]) {
     let hits = 0; const e0 = s < 0 ? out.L : out.R;
     for (const up of [0.03, 0.06]) for (const f of [0.9, 1.0, 1.1]) {
       const x = s * f * e0, y = ny - up * p.sw, q = {x: p.sm.x + x * ca - y * sa, y: p.sm.y + x * sa + y * ca};
-      if (catAt(q.x, q.y, w, h) === 4) hits++;
+      if (catAt(q.x, q.y, w, h) === 4) { hits++; const c = colorAt(q.x, q.y, w, h); if (c) sideCols.push(c); }
     }
     (out.collarHits = out.collarHits || {})[s] = hits;
   }
   // A shirt has its collar on BOTH sides: one clear side (3+ of 6) or 4+ hits across both sides = collar on both.
   // Tested Oct 18: tee photos scored 0 of 6 on every side; the painted-collar test scored 3 and 1.
-  const ch = out.collarHits, both = Math.max(ch[-1], ch[1]) >= 3 || ch[-1] + ch[1] >= 4;
+  // v10: any fabric above (2+ of 12 spots) makes it a candidate; the pendant-spot test below decides. Tested Oct 18:
+  // a tee scored 3 and a blouse 2, so counting alone cannot tell them apart; what the pendant lies on can.
+  const ch = out.collarHits, candidate = ch[-1] + ch[1] >= 2;
+  // v10 (Kristin, Oct 18: on her navy crew-neck tee "it seems to be recognizing the neck band"): fabric above the chain
+  // start is not enough. Look at what the PENDANT lies on (center, at the pendant's height):
+  //  - bare skin there = an open collar (her coral blouse) -> collar, chain goes under it;
+  //  - fabric there of a DIFFERENT color than the side fabric = an outer layer (white jacket over a navy top) -> collar;
+  //  - fabric of the SAME color = the same garment (a tee's neck band) -> no collar, chain stays on top.
+  let both = false; out.centerColor = null; out.collarWhy = candidate ? "" : "no fabric above";
+  if (candidate) {
+    const py = p.sw * (DROP[length] + nudge), q = {x: p.sm.x - py * sa, y: p.sm.y + py * ca};
+    const cc = catAt(q.x, q.y, w, h), col = colorAt(q.x, q.y, w, h);
+    const side = sideCols.length ? sideCols.reduce((a, c) => [a[0] + c[0], a[1] + c[1], a[2] + c[2]], [0, 0, 0]).map((v) => v / sideCols.length) : null;
+    if (isSkin(cc)) { both = true; out.collarWhy = "open collar"; }
+    else if (cc === 4 && side && col) {
+      const dd = cdist(side, col); out.collarDist = Math.round(dd);
+      if (dd > 70) { both = true; out.centerColor = col; out.collarWhy = "outer layer"; } else out.collarWhy = "same garment";
+    } else out.collarWhy = "unclear";
+  }
   out.collar = {"-1": both, "1": both};
   // v9g (Kristin, Oct 18, coral open-collar blouse: "not recognizing the collar"): the collar WAS found, but the chain
   // started on bare skin inside the collar's open V, so nothing covered it. Her real chain slides under the collar's
   // inner edge. So with a collar, where the skin ends at fabric, start the chain 0.035 x shoulder width past that edge,
   // under the fabric (the collar is then drawn over it).
+  if (both && !neckSkin) { out.L = base * 1.15; out.R = base * 1.15; } // high collar right at the neck: tuck just past it
   if (both) for (const s of [-1, 1]) {
     const r = res[s]; if (r.stopCat !== 4 || r.edge < p.sw * 0.07 || r.edge > p.sw * 0.3) continue;
     const under = r.edge + p.sw * 0.035;
     if (s < 0) out.L = under; else out.R = under;
   }
   out.raw = [+(res[-1].edge / p.sw).toFixed(3), res[-1].stopCat, +(res[1].edge / p.sw).toFixed(3), res[1].stopCat];
-  const nm = (c) => ({0: "edge", 1: "hair", 4: "collar"})[c] || "other";
-  out.how = `seg L:${nm(res[-1].stopCat)} R:${nm(res[1].stopCat)}`;
+  const nm = (c) => ({0: "edge", 1: "hair", 4: "fabric"})[c] || "other";
+  out.how = neckSkin ? `seg L:${nm(res[-1].stopCat)} R:${nm(res[1].stopCat)}` : "neck covered";
   return out;
 }
 
@@ -236,40 +280,68 @@ function place(lm, w, h) {
   // head-to-shoulder ratio is believable.
   const swRaw = Math.hypot(ls.x - rs.x, ls.y - rs.y);
   const shouldersOk = Math.min(ls.v, rs.v) >= 0.5 && inFrame(ls) && inFrame(rs) && earW / swRaw <= FACE.earPerSw * 1.3;
-  if (shouldersOk) {
+  const nose = P(0), faceOk = Math.min(ml.v, mr.v, le.v, re.v, nose.v) >= 0.5 && earW > 10;
+  if (faceOk) {
+    // v10: FACE anchor (see FACE above). Pendant straight below the CHIN (Kristin: "it should really be in line below
+    // the person's chin"): chin = mouth pushed 0.8 of the nose-to-mouth step further down the face line.
+    sw = earW / FACE.earPerSw;
+    const chinX = mouth.x + (mouth.x - nose.x) * 0.8;
+    sm = {x: chinX, y: mouth.y + sw * FACE.mouthToSm};
+    // Tilt follows the shoulders (a tilted head does not tilt the necklace), limited to +/-0.3 rad; level if no shoulders.
+    ang = shouldersOk ? Math.max(-0.3, Math.min(0.3, Math.atan2(ls.y - rs.y, ls.x - rs.x))) : 0;
+    fit = "face";
+  } else if (shouldersOk) {
     sm = {x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2};
     sw = Math.hypot(ls.x - rs.x, ls.y - rs.y);
     ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
     fit = "shoulders";
-  } else if (Math.min(ml.v, mr.v, le.v, re.v) >= 0.5 && earW > 10) {
-    // v9 step 3: close-up phone fallback. Shoulders are out of frame, so size and place from the face.
-    ang = Math.atan2(le.y - re.y, le.x - re.x);
-    sw = earW / FACE.closeEarPerSw;
-    // Tested on 3 photos: the neck sits under the point between the EARS (off by 2-5% of shoulder width) better than
-    // under the mouth (8-11%), since the mouth moves when the head turns. Height comes from the mouth (steadier when looking down).
-    // Straight down, not along the head tilt: a tilted head does not tilt the shoulders.
-    sm = {x: (le.x + re.x) / 2, y: mouth.y + sw * FACE.mouthToSm};
-    fit = "face";
   } else return null;
   const neckY = sm.y - (sm.y - mouth.y) * 0.31; // v8: MEASURED from Kristin's real necklace in the test photo (chain meets the neck at 0.31)
   window.__tryonDebug = {earMid: [Math.round((le.x + re.x) / 2), Math.round((le.y + re.y) / 2)], fit, earW: Math.round(earW), sw: Math.round(sw), ratio: +(earW / sw).toFixed(3), mouthToSm: +((sm.y - mouth.y) / sw).toFixed(3), sm: [Math.round(sm.x), Math.round(sm.y)], mouth: [Math.round(mouth.x), Math.round(mouth.y)], ang: +ang.toFixed(3), w, h};
   const p = {sm, mouth, sw, ang, neckY, earW, fit};
   const e = neckEdges(p, w, h); p.L = e.L; p.R = e.R; p.how = e.how;
   if (window.__dbg && window.__dbg.forceHalf) { p.L = p.R = sw * window.__dbg.forceHalf; } // debug only
-  p.collar = e.collar || {};
+  p.collar = e.collar || {}; p.centerColor = e.centerColor; p.collarWhy = e.collarWhy;
   if (window.__dbg && window.__dbg.forceCollar) p.collar = {"-1": true, "1": true}; // debug only
-  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits;
+  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist;
   window.__tryonDebug.L = +(e.L / sw).toFixed(3); window.__tryonDebug.R = +(e.R / sw).toFixed(3); window.__tryonDebug.how = e.how; window.__tryonDebug.raw = e.raw;
   return p;
 }
 
+// v10 (Kristin, Oct 18: "it moves around a LOT... it needs to stay still and allow for some minor movement"):
+// - position: holds still for tiny moves (under 3% of a face width), follows smoothly on bigger ones, catches up fast on real moves;
+// - size and tilt: change slowly (a body does not change size between frames);
+// - collar on/off: must agree for 6 frames in a row before it switches.
+let collarVotes = 0;
 function smoothen(p) {
-  if (!smooth) { smooth = p; return p; }
-  const a = 0.35, m = (u, v) => u + (v - u) * a;
-  smooth = {...p, sm: {x: m(smooth.sm.x, p.sm.x), y: m(smooth.sm.y, p.sm.y)}, sw: m(smooth.sw, p.sw), ang: m(smooth.ang, p.ang), neckY: m(smooth.neckY, p.neckY), earW: m(smooth.earW, p.earW), L: m(smooth.L, p.L), R: m(smooth.R, p.R)};
+  if (!smooth) { smooth = {...p, neckOff: p.neckY - p.sm.y}; collarVotes = 0; return smooth; }
+  const unit = smooth.sw * FACE.earPerSw; // one face width
+  const mv = Math.hypot(p.sm.x - smooth.sm.x, p.sm.y - smooth.sm.y);
+  const a = mv < unit * 0.03 ? 0.03 : Math.min(0.5, Math.max(0.1, mv / (unit * 0.5)));
+  const lerp = (u, v, k) => u + (v - u) * k;
+  const big = Math.abs(p.sw - smooth.sw) > smooth.sw * 0.2; // a real step closer or back
+  const swNew = lerp(smooth.sw, p.sw, big ? 0.25 : 0.06);
+  const neckOff = lerp(smooth.neckOff, p.neckY - p.sm.y, 0.08);
+  const smNew = {x: lerp(smooth.sm.x, p.sm.x, a), y: lerp(smooth.sm.y, p.sm.y, a)};
+  let collar = smooth.collar, centerColor = smooth.centerColor, collarWhy = smooth.collarWhy;
+  if (!!(p.collar && p.collar[1]) !== !!(smooth.collar && smooth.collar[1])) { if (++collarVotes >= 6) { collar = p.collar; centerColor = p.centerColor; collarWhy = p.collarWhy; collarVotes = 0; } }
+  else { collarVotes = 0; centerColor = p.centerColor || centerColor; }
+  smooth = {...p, sm: smNew, sw: swNew, ang: lerp(smooth.ang, p.ang, 0.08), neckOff, neckY: smNew.y + neckOff, earW: lerp(smooth.earW, p.earW, 0.06), L: lerp(smooth.L, p.L, 0.08), R: lerp(smooth.R, p.R, 0.08), collar, centerColor, collarWhy};
   return smooth;
 }
 
+// v10 check: shaky input (random 2% of a face width each frame, like a hand-held phone) must move the necklace less than
+// 0.5% of a face width on average; a real move of 40% must be followed at least 90% within 12 frames.
+window.__steadyTest = () => {
+  const save = smooth, earW = 200, sw = earW / FACE.earPerSw; let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5);
+  const mk = (x, y) => ({sm: {x, y}, sw: sw * (1 + rnd() * 0.04), ang: rnd() * 0.04, neckY: y - 50, earW, L: 60, R: 60, collar: {}, mouth: {x, y: y - 100}});
+  smooth = null; let prev = smoothen(mk(500, 500)), moved = 0;
+  for (let i = 0; i < 60; i++) { const o = smoothen(mk(500 + rnd() * earW * 0.04, 500 + rnd() * earW * 0.04)); moved += Math.hypot(o.sm.x - prev.sm.x, o.sm.y - prev.sm.y); prev = o; }
+  const jitter = moved / 60 / earW;
+  let o; for (let i = 0; i < 12; i++) o = smoothen(mk(500 + earW * 0.4, 500));
+  const follow = (o.sm.x - 500) / (earW * 0.4);
+  smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
+};
 // v7 (Oct 18): real Love Talla pendants, cut out from their product photos. w = width as a share of shoulder width;
 // attach = where the chain meets the pendant, as fractions of the image (two points for the heart, one loop for the disc).
 // v9: full-size cutouts (551 px heart, 170 px disc) so close-ups stay sharp.
@@ -425,13 +497,28 @@ function drawHairOver(source, p, g, w, h, S) {
 }
 // v9e: collar over the chain, only on a side where a collar was found, only the top part of the chain on that side
 // (from just above the neck point to 45% of the way down), never over the pendant.
+// v10: the collar mask = fabric pixels, minus fabric the color of the garment the pendant lies on (so a navy top under a
+// white jacket never covers the chain; only the jacket does).
+const cmc = document.createElement("canvas"), cmx = cmc.getContext("2d");
+function buildCollarMask(w, h, centerColor) {
+  if (!pxData) return clothCanvas;
+  if (cmc.width !== pxW || cmc.height !== pxH) { cmc.width = pxW; cmc.height = pxH; }
+  const img = cmx.createImageData(pxW, pxH), d = img.data;
+  for (let Y = 0; Y < pxH; Y++) for (let X = 0; X < pxW; X++) {
+    const i = (Y * pxW + X) * 4;
+    if (catAt((X + 0.5) / pxW * w, (Y + 0.5) / pxH * h, w, h) !== 4) continue;
+    if (centerColor && cdist([pxData[i], pxData[i + 1], pxData[i + 2]], centerColor) < 70) continue;
+    d[i + 3] = 255;
+  }
+  cmx.putImageData(img, 0, 0); return cmc;
+}
 function drawCollarOver(source, p, g, w, h, S) {
   if (!seg || !seg.hasCloth || !p.collar || !(p.collar[-1] || p.collar[1])) return;
   if (layer.width !== canvas.width || layer.height !== canvas.height) { layer.width = canvas.width; layer.height = canvas.height; }
   layerCtx.setTransform(S, 0, 0, S, 0, 0); layerCtx.globalCompositeOperation = "source-over";
   layerCtx.clearRect(0, 0, w, h); layerCtx.drawImage(source, 0, 0, w, h);
   layerCtx.globalCompositeOperation = "destination-in"; layerCtx.imageSmoothingEnabled = true;
-  layerCtx.drawImage(clothCanvas, 0, 0, w, h); layerCtx.globalCompositeOperation = "source-over";
+  layerCtx.drawImage(buildCollarMask(w, h, p.centerColor), 0, 0, w, h); layerCtx.globalCompositeOperation = "source-over";
   ctx.save(); ctx.translate(p.sm.x, p.sm.y); ctx.rotate(p.ang);
   const b = g.box, top = g.ny - p.sw * 0.12, bot = g.ny + (b.y - g.ny) * 0.45;
   ctx.beginPath();
@@ -455,10 +542,12 @@ function render(source, w, h, ts) {
   ctx.drawImage(source, 0, 0, w, h);
   let res = null;
   try { res = mode === "camera" ? landmarker.detectForVideo(source, ts) : landmarker.detect(source); } catch (e) { say("Tracking error: " + e.message); }
+  grabPixels(source, w, h);
   if (mode !== "camera" || frames % 2 === 0) segment(source, ts); // v9: on camera, hair/neck map every other frame (keeps phones smooth)
   frames++;
   const lm = res && res.landmarks && res.landmarks[0];
   const p = lm ? place(lm, w, h) : null;
+  window.__lm = lm ? lm.map((q) => [Math.round(q.x * w), Math.round(q.y * h), +(q.visibility ?? 1).toFixed(2)]) : null; // debug only
   let used = null;
   if (p) {
     found++; if (firstFoundMs === null) firstFoundMs = performance.now() - startMs;
@@ -475,7 +564,7 @@ function render(source, w, h, ts) {
   }
   ctx.restore();
   fpsN++; const now = performance.now(); if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
-  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length} in · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)} · fit ${p ? p.fit : "—"} · neck ${p ? p.how : "—"}${p && p.collar && (p.collar[-1] || p.collar[1]) ? " · collar " + (p.collar[-1] ? "L" : "") + (p.collar[1] ? "R" : "") : ""}${segmenter ? "" : " · no segmenter"}`;
+  statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length} in · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)} · fit ${p ? p.fit : "—"} · neck ${p ? p.how : "—"}${used && used.collar && used.collar[1] ? " · collar (" + used.collarWhy + ")" : (used && used.collarWhy ? " · no collar (" + used.collarWhy + ")" : "")}${segmenter ? "" : " · no segmenter"}`;
   if (mode === "photo") say(p ? "Necklace placed on the photo." : "No face or shoulders found in this photo. Try one showing your neck.");
   window.__tryonLast = {found: !!p, frames, firstFoundMs, debug: window.__tryonDebug, scale: S};
 }
