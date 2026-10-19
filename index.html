@@ -80,6 +80,11 @@ const FACE = {earPerSw: 0.392, mouthToSm: 0.398};
 // MEASURED on 4 photos of Kristin's real 44 cm necklace: the pendant hangs 1.24-1.39 (mean 1.335) ear-widths below the
 // mouth (shoulder anchor spread 0.09-0.19 shoulder widths, ~35%). sw is now a face-based unit: earW / 0.392 (calibration
 // ratio), and mouthToSm 0.398 makes a 44 cm chain land at 1.335 ear-widths below the mouth.
+// v11 measure-then-lock state (camera only; window.__forceLock lets tests use it on photos)
+let lock = null, frontRun = 0, lockedAt = 0, lastGood = null;
+const lockOn = () => mode === "camera" || !!window.__forceLock;
+window.__resetLock = () => { lock = null; frontRun = 0; lastGood = null; smooth = null; };
+window.__getLock = () => lock;
 let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
 let length = 17; // v10b: 16-18 in range (Kristin's own 44 cm chain is in it)
 const say = (t) => { statusEl.textContent = t; };
@@ -308,18 +313,48 @@ function place(lm, w, h) {
     ang = Math.atan2(ls.y - rs.y, ls.x - rs.x);
     fit = "shoulders";
   } else return null;
+  // v11 (Kristin, Oct 18: chin up/down or turning the head moved the necklace to "a weird spot"): MEASURE, THEN LOCK.
+  // A real necklace sits on the BODY. When the head faces the camera straight on, measure (from the face) the size and
+  // where the chin line sits relative to the shoulders; then place the necklace from the SHOULDERS with that measurement,
+  // so head moves change nothing. "Straight on" ranges MEASURED on Kristin's 14 photos: nose within 0.12 of a face width
+  // of the ear midpoint (turn), ear line within 0.15 rad of level (tilt), mouth 0.36-0.50 face widths below the ears (chin).
+  let mouthV = mouth;
+  const earMid = {x: (le.x + re.x) / 2, y: (le.y + re.y) / 2};
+  const frontal = faceOk && Math.abs(nose.x - earMid.x) / earW < 0.12 && Math.abs(Math.atan2(le.y - re.y, le.x - re.x)) < 0.15 &&
+    (mouth.y - earMid.y) / earW > 0.36 && (mouth.y - earMid.y) / earW < 0.50;
+  const bodyOk = Math.min(ls.v, rs.v) >= 0.5 && inFrame(ls) && inFrame(rs);
+  if (lockOn()) {
+    const angS = Math.max(-0.3, Math.min(0.3, Math.atan2(ls.y - rs.y, ls.x - rs.x))), cs = Math.cos(angS), sn = Math.sin(angS);
+    const shMid = {x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2};
+    if (frontal && fit === "face" && bodyOk) {
+      frontRun++;
+      // measurement in the shoulders' own frame (units of shoulder width), so it survives leaning and stepping closer
+      const dx = sm.x - shMid.x, dy = sm.y - shMid.y;
+      const m = {k: sw / swRaw, ox: (dx * cs + dy * sn) / swRaw, oy: (-dx * sn + dy * cs) / swRaw, mx: (mouth.x - sm.x) / sw, my: (mouth.y - sm.y) / sw};
+      if (!lock && (frontRun >= 6 || mode !== "camera")) { lock = m; lockedAt = performance.now(); }
+      else if (lock) { const b = Math.abs(m.k - lock.k) / lock.k > 0.2 ? 0.3 : 0.05; for (const key in lock) lock[key] += (m[key] - lock[key]) * b; } // quiet re-check
+    } else frontRun = 0;
+    if (lock && bodyOk) {
+      sw = lock.k * swRaw; ang = angS;
+      sm = {x: shMid.x + (lock.ox * cs - lock.oy * sn) * swRaw, y: shMid.y + (lock.ox * sn + lock.oy * cs) * swRaw};
+      mouthV = {x: sm.x + lock.mx * sw, y: sm.y + lock.my * sw};
+      fit = frontal ? "locked (straight)" : "locked (head moved)";
+    } else if (lock && !frontal && lastGood) { return lastGood; } // close-up with the head turned: hold where it was
+    else if (!lock) fit = "measuring";
+  }
   // v10b (Kristin, Oct 18: the chain "just stops around my shirt... it should be where the top of my shoulders is"):
 // the chain now starts higher, at the side of the neck where it meets the top of the shoulders (0.56 ear-widths below
 // the mouth), and neckEdges lifts it above a high neck band if needed.
-const neckY = sm.y - (sm.y - mouth.y) * 0.45;
+const neckY = sm.y - (sm.y - mouthV.y) * 0.45;
   window.__tryonDebug = {earMid: [Math.round((le.x + re.x) / 2), Math.round((le.y + re.y) / 2)], fit, earW: Math.round(earW), sw: Math.round(sw), ratio: +(earW / sw).toFixed(3), mouthToSm: +((sm.y - mouth.y) / sw).toFixed(3), sm: [Math.round(sm.x), Math.round(sm.y)], mouth: [Math.round(mouth.x), Math.round(mouth.y)], ang: +ang.toFixed(3), w, h};
-  const p = {sm, mouth, sw, ang, neckY, earW, fit};
+  const p = {sm, mouth: mouthV, sw, ang, neckY, earW, fit, frontal};
   const e = neckEdges(p, w, h); p.L = e.L; p.R = e.R; p.how = e.how; if (e.neckY !== undefined) p.neckY = e.neckY;
   p.nyL = e.nyL !== undefined ? e.nyL : p.neckY - p.sm.y; p.nyR = e.nyR !== undefined ? e.nyR : p.neckY - p.sm.y;
   if (window.__dbg && window.__dbg.forceHalf) { p.L = p.R = sw * window.__dbg.forceHalf; } // debug only
   p.collar = e.collar || {}; p.centerColor = e.centerColor; p.collarWhy = e.collarWhy;
   if (window.__dbg && window.__dbg.forceCollar) p.collar = {"-1": true, "1": true}; // debug only
   window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist; window.__tryonDebug.votes = e.votes; window.__tryonDebug.hits = e.collarHits;
+  lastGood = p;
   window.__tryonDebug.L = +(e.L / sw).toFixed(3); window.__tryonDebug.R = +(e.R / sw).toFixed(3); window.__tryonDebug.how = e.how; window.__tryonDebug.raw = e.raw;
   return p;
 }
@@ -357,6 +392,33 @@ window.__steadyTest = () => {
   let o; for (let i = 0; i < 12; i++) o = smoothen(mk(500 + earW * 0.4, 500));
   const follow = (o.sm.x - 500) / (earW * 0.4);
   smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
+};
+// v11 check: lock on a straight-on frame, then move ONLY the head (chin up/down, turn, tilt). The necklace must stay put
+// (within 1% of a face width). Run after a photo is loaded (uses its landmarks).
+window.__lockTest = () => {
+  const L0 = window.__lmRaw; if (!L0) return {ok: false, why: "load a photo first"};
+  window.__forceLock = true; window.__resetLock();
+  const base = window.__place(L0.map((q) => ({...q})));
+  if (!lock) { window.__forceLock = false; return {ok: false, why: "no lock (photo not straight on)"}; }
+  const earW = Math.hypot((L0[7].x - L0[8].x), (L0[7].y - L0[8].y)); // normalized
+  const head = (f) => L0.map((q, i) => (i <= 10 ? {...q, ...f(q, i)} : {...q}));
+  const cy = (L0[7].y + L0[8].y) / 2, cx = (L0[7].x + L0[8].x) / 2;
+  const moves = {
+    chinUp: head((q) => ({y: q.y - earW * 0.25 - (q.y - cy) * 0.35})),
+    chinDown: head((q) => ({y: q.y + earW * 0.15 + (q.y - cy) * 0.3})),
+    turnLeft: head((q, i) => ({x: cx + (q.x - cx) * 0.75 + (i === 0 || i === 9 || i === 10 ? earW * 0.25 : 0)})),
+    turnRight: head((q, i) => ({x: cx + (q.x - cx) * 0.75 - (i === 0 || i === 9 || i === 10 ? earW * 0.25 : 0)})),
+    tilt: head((q) => ({x: cx + (q.x - cx) * Math.cos(0.3) - (q.y - cy) * Math.sin(0.3), y: cy + (q.x - cx) * Math.sin(0.3) + (q.y - cy) * Math.cos(0.3)})),
+  };
+  const res = {}; let ok = true; const ewPx = base.earW;
+  for (const k in moves) {
+    const p = window.__place(moves[k]); if (!p) { res[k] = "none"; ok = false; continue; }
+    const d = Math.hypot(p.sm.x - base.sm.x, p.sm.y - base.sm.y) / ewPx, ds = Math.abs(p.sw - base.sw) / base.sw;
+    res[k] = {movePct: +(d * 100).toFixed(2), sizePct: +(ds * 100).toFixed(2), fit: p.fit};
+    if (d > 0.01 || ds > 0.01) ok = false;
+  }
+  window.__forceLock = false; window.__resetLock();
+  return {ok, res};
 };
 // v7 (Oct 18): real Love Talla pendants, cut out from their product photos. w = width as a share of shoulder width;
 // attach = where the chain meets the pendant, as fractions of the image (two points for the heart, one loop for the disc).
@@ -563,6 +625,7 @@ function render(source, w, h, ts) {
   frames++;
   const lm = res && res.landmarks && res.landmarks[0];
   const p = lm ? place(lm, w, h) : null;
+  window.__lmRaw = lm; window.__place = (L) => place(L, w, h); // test hooks
   window.__lm = lm ? lm.map((q) => [Math.round(q.x * w), Math.round(q.y * h), +(q.visibility ?? 1).toFixed(2)]) : null; // debug only
   let used = null;
   if (p) {
@@ -582,6 +645,12 @@ function render(source, w, h, ts) {
   fpsN++; const now = performance.now(); if (now - fpsT > 1000) { fps = fpsN * 1000 / (now - fpsT); fpsN = 0; fpsT = now; }
   statsEl.textContent = `found ${found}/${frames} frames · first found ${firstFoundMs === null ? "—" : (firstFoundMs / 1000).toFixed(2) + " s"} · ${mode === "camera" ? fps.toFixed(0) + " fps" : "photo"} · length ${length - 1}–${length + 1} in (shown at ${length}) · nudge ${nudge >= 0 ? "+" : ""}${nudge.toFixed(2)} · fit ${p ? p.fit : "—"} · neck ${p ? p.how : "—"}${used && used.collar && used.collar[1] ? " · collar (" + used.collarWhy + ")" : (used && used.collarWhy ? " · no collar (" + used.collarWhy + ")" : "")}${segmenter ? "" : " · no segmenter"}`;
   if (mode === "photo") say(p ? "Necklace placed on the photo." : "No face or shoulders found in this photo. Try one showing your neck.");
+  // v11 helper line (Kristin: guide the first measurement)
+  if (mode === "camera") {
+    if (!lock) say("Look straight at the camera for a second, with your shoulders in view.");
+    else if (performance.now() - lockedAt < 2500) say("Got it. Move naturally.");
+    else say("");
+  }
   window.__tryonLast = {found: !!p, frames, firstFoundMs, debug: window.__tryonDebug, scale: S};
 }
 
@@ -599,7 +668,8 @@ $("camBtn").onclick = async () => {
     await landmarker.setOptions({runningMode: "VIDEO"});
     if (segmenter) await segmenter.setOptions({runningMode: "VIDEO"});
     mode = "camera"; smooth = null; found = frames = 0; firstFoundMs = null; startMs = performance.now();
-    say("Camera on. Close-ups work too; shoulders in view is best.");
+    lock = null; frontRun = 0; lastGood = null;
+    say("Look straight at the camera for a second, with your shoulders in view.");
     loop();
   } catch (e) { say("Camera not available here (" + e.name + "). Use a photo instead, or open this page over https."); }
 };
@@ -612,6 +682,7 @@ async function runPhoto() {
   await landmarker.setOptions({runningMode: "IMAGE"});
   if (segmenter) await segmenter.setOptions({runningMode: "IMAGE"});
   mode = "photo"; found = frames = 0; firstFoundMs = null; startMs = performance.now();
+  if (!window.__forceLock) { lock = null; frontRun = 0; lastGood = null; }
   const s = Math.min(1, 1600 / Math.max(srcImg.naturalWidth, srcImg.naturalHeight));
   render(srcImg, Math.round(srcImg.naturalWidth * s), Math.round(srcImg.naturalHeight * s));
 }
