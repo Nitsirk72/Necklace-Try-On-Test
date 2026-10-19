@@ -236,10 +236,16 @@ function neckEdges(p, w, h) {
     edge = Math.min(p.sw * 0.24, Math.max(p.sw * 0.13, edge));
     const colX = s * edge - s * p.sw * 0.015; // just inside the outline
     let yJ = null;
-    for (let y = ny; y <= ny + p.sw * 0.25; y += step) { const c = at(colX, y); if (c === 4) { yJ = y; break; } if (!isSkin(c) && c !== 1) break; }
+    // v11b: search 0.12 down (was 0.25: in dim light it walked past the neckline)
+    for (let y = ny; y <= ny + p.sw * 0.12; y += step) { const c = at(colX, y); if (c === 4) { yJ = y; break; } if (!isSkin(c) && c !== 1) break; }
     res[s] = {edge: Math.abs(colX), stopCat, y: yJ !== null ? yJ : ny, met: yJ !== null};
   }
   out.L = res[-1].edge; out.R = res[1].edge; out.nyL = res[-1].y; out.nyR = res[1].y;
+  // v11b (Kristin's dim-light test, Oct 18: one side of the chain went flat and wide): a neck is the same on both sides.
+  // In the shoulders' own frame the two start points must match: widths within 25% of each other (both pulled toward the
+  // narrower, more trustworthy side) and heights within 0.03 x sw (both use the higher one, nearer the neck).
+  const wMin = Math.min(out.L, out.R); out.L = Math.min(out.L, wMin * 1.25); out.R = Math.min(out.R, wMin * 1.25);
+  const yTop = Math.min(out.nyL, out.nyR); out.nyL = Math.min(out.nyL, yTop + p.sw * 0.03); out.nyR = Math.min(out.nyR, yTop + p.sw * 0.03);
   // Collar check (v9e/v10, see Backlog B72/B74/B76): fabric just above the neck at fixed spots, then what the pendant lies on.
   const sideCols = [], nyCollar = -(p.sm.y - p.mouth.y) * 0.31; // v10b: the height it was tested at
   for (const s of [-1, 1]) {
@@ -393,6 +399,8 @@ window.__steadyTest = () => {
   const follow = (o.sm.x - 500) / (earW * 0.4);
   smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
 };
+// v11b check: after any photo, the two chain start points match (widths within 25%, heights within 0.03 x sw).
+window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.2501 && Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0301; };
 // v11 check: lock on a straight-on frame, then move ONLY the head (chin up/down, turn, tilt). The necklace must stay put
 // (within 1% of a face width). Run after a photo is loaded (uses its landmarks).
 window.__lockTest = () => {
