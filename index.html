@@ -278,10 +278,13 @@ function neckEdges(p, w, h) {
   const mL = res[-1].met, mR = res[1].met;
   if (mL && !mR) { out.R = out.L; out.nyR = out.nyL; }
   else if (mR && !mL) { out.L = out.R; out.nyL = out.nyR; }
-  else if (!(res[-1].corner && res[1].corner)) { // v13b: two clearly found corners are trusted as-is (a turned head is uneven)
+  else if (!(res[-1].corner && res[1].corner)) { // v13b: two found corners keep their own WIDTHS (a turned head is uneven)
     const wMin = Math.min(out.L, out.R); out.L = Math.min(out.L, wMin * 1.4); out.R = Math.min(out.R, wMin * 1.4);
-    const yTop = Math.min(out.nyL, out.nyR); out.nyL = Math.min(out.nyL, yTop + p.sw * 0.06); out.nyR = Math.min(out.nyR, yTop + p.sw * 0.06);
   }
+  // v13c (Kristin's drawing, Oct 18: both ends high, where the neck meets the collar, at the SAME height; the tracker had
+  // one end 50 px low on the jacket/top edge): in the shoulders' frame both ends sit at the same height (shoulders are
+  // level even when the head turns). The lower end is lifted to within 0.03 x sw of the higher one.
+  { const yTop = Math.min(out.nyL, out.nyR); out.nyL = Math.min(out.nyL, yTop + p.sw * 0.03); out.nyR = Math.min(out.nyR, yTop + p.sw * 0.03); }
   // Collar check (v9e/v10, see Backlog B72/B74/B76): fabric just above the neck at fixed spots, then what the pendant lies on.
   const sideCols = [], nyCollar = -(p.sm.y - p.mouth.y) * 0.31; // v10b: the height it was tested at
   for (const s of [-1, 1]) {
@@ -488,7 +491,7 @@ window.__steadyTest = () => {
   smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
 };
 // v11b check: after any photo, the two chain start points match (widths within 25%, heights within 0.03 x sw).
-window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; if (/L:corner R:corner/.test(d.how || "")) return true; /* v13b: both corners found = trusted */ const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0601; };
+window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; const hOk = Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0301; if (/L:corner R:corner/.test(d.how || "")) return hOk; /* v13c: corners keep widths, heights must match */ const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && hOk; };
 // v11 check: lock on a straight-on frame, then move ONLY the head (chin up/down, turn, tilt). The necklace must stay put
 // (within 1% of a face width). Run after a photo is loaded (uses its landmarks).
 window.__lockTest = () => {
