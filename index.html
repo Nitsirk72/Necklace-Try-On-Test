@@ -86,6 +86,7 @@ const lockOn = () => mode === "camera" || !!window.__forceLock;
 window.__resetLock = () => { lock = null; frontRun = 0; lastGood = null; smooth = null; };
 window.__getLock = () => lock;
 window.__getLastGood = () => lastGood; // test hook
+window.__getLastDrawn = () => lastDrawn; // test hook
 let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
 let length = 17; // v10b: 16-18 in range (Kristin's own 44 cm chain is in it)
 const say = (t) => { statusEl.textContent = t; };
@@ -586,9 +587,18 @@ window.__dotTest = async () => {
   let sum = 0, worst = 0; const rows = [];
   for (const n of ["9602", "9603", "9604", "9605", "9606", "9607"]) {
     await window.__tryonPhoto("/test/clean_" + n + ".jpg"); const q = lastGood; if (!q) return {ok: false, why: "no fit " + n};
-    for (const t of T.filter((t) => t[0] === n)) { const e = t[1] < 0 ? q.endL : q.endR; const d = Math.hypot(e.x - t[2], e.y - t[3]); sum += d; worst = Math.max(worst, d); rows.push(n + (t[1] < 0 ? " L " : " R ") + Math.round(d)); }
+    for (const t of T.filter((t) => t[0] === n)) { const qd = lastDrawn || q; const e = t[1] < 0 ? qd.endL : qd.endR; const d = Math.hypot(e.x - t[2], e.y - t[3]); sum += d; worst = Math.max(worst, d); rows.push(n + (t[1] < 0 ? " L " : " R ") + Math.round(d)); }
   }
-  const avg = sum / T.length; return {ok: avg <= 15 && worst <= 30, avg: Math.round(avg), worst: Math.round(worst), rows};
+  // v13e: bar 20 (was 15). Kristin: her dots were large and rough; the exact rule is now "AT the color change" (__edgeTest).
+  const avg = sum / T.length; return {ok: avg <= 20 && worst <= 30, avg: Math.round(avg), worst: Math.round(worst), rows};
+};
+// v13e check: on the 9 uncovered sides of Kristin's clean photos, the drawn chain end must sit ON a color change (snap found
+// an edge stronger than 35). Bar: at least 8 of 9.
+window.__edgeTest = async () => {
+  const S = [["9603", "endL"], ["9603", "endR"], ["9606", "endL"], ["9606", "endR"], ["9607", "endL"], ["9607", "endR"], ["9602", "endR"], ["9604", "endR"], ["9605", "endR"]];
+  let on = 0; const rows = [];
+  for (const [n, k] of S) { await window.__tryonPhoto("/test/clean_" + n + ".jpg"); const q = lastDrawn; const v = q && q.snapped && q.snapped[k]; if (v) on++; rows.push(n + " " + k + " " + (v || "no edge")); }
+  return {ok: on >= 8, on, of: S.length, rows};
 };
 // v7 (Oct 18): real Love Talla pendants, cut out from their product photos. w = width as a share of shoulder width;
 // attach = where the chain meets the pendant, as fractions of the image (two points for the heart, one loop for the disc).
@@ -785,6 +795,49 @@ function drawCollarOver(source, p, g, w, h, S) {
   ctx.restore();
 }
 
+// v13e (Kristin, Oct 18: "ensure the chain stops near the neck/collar bone when there is a color transition: skin to
+// shirt, shirt to skin, or skin to shadow"): a final SNAP. Along the chain's own line, look a short way past and before
+// each end (4.5% of the shoulder width each way) in the real photo pixels, find the sharpest color change, and move the
+// end onto it. Nearer changes win ties. If no clear change, the end stays.
+const snapC = document.createElement("canvas"), snapX = snapC.getContext("2d", {willReadFrequently: true});
+let lastDrawn = null;
+function snapEnds(source, p, w, h) {
+  if (!p || !p.endL || !p.endR || (window.__dbg && window.__dbg.noSnap)) return p;
+  const py = p.sw * (DROP[length] + nudge), c = Math.cos(p.ang), s2 = Math.sin(p.ang), px = p.pendX || 0;
+  const pend = {x: p.sm.x + px * c - py * s2, y: p.sm.y + px * s2 + py * c};
+  const R = p.sw * 0.045, out = {...p};
+  for (const key of ["endL", "endR"]) {
+    const e = p[key], dx = e.x - pend.x, dy = e.y - pend.y, L = Math.hypot(dx, dy); if (L < 1) continue;
+    const ux = dx / L, uy = dy / L, pad = 4;
+    const bx = Math.max(0, Math.floor(Math.min(e.x - ux * R, e.x + ux * R, e.x - R / 2) - pad - 3)), by = Math.max(0, Math.floor(Math.min(e.y - uy * R, e.y + uy * R, e.y - R / 2) - pad - 3));
+    const bw = Math.min(w - bx, Math.ceil(Math.max(Math.abs(ux) * 2 * R, R) + 2 * pad + 8)), bh = Math.min(h - by, Math.ceil(Math.max(Math.abs(uy) * 2 * R, R) + 2 * pad + 8));
+    if (bw < 4 || bh < 4) continue;
+    if (snapC.width !== bw || snapC.height !== bh) { snapC.width = bw; snapC.height = bh; }
+    let data; try { snapX.drawImage(source, bx, by, bw, bh, 0, 0, bw, bh); data = snapX.getImageData(0, 0, bw, bh).data; } catch (err) { continue; }
+    const col = (t) => { const x0 = Math.round(e.x + ux * t - bx), y0 = Math.round(e.y + uy * t - by); let r = 0, g = 0, b = 0, n = 0;
+      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) { const X = x0 + ox, Y = y0 + oy; if (X < 0 || Y < 0 || X >= bw || Y >= bh) continue; const i = (Y * bw + X) * 4; r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
+      return n ? [r / n, g / n, b / n] : null; };
+    let best = 0, bestT = 0;
+    for (let t = -R; t <= R; t += 1) {
+      const a = col(t - 3), b = col(t + 3); if (!a || !b) continue;
+      const score = cdist(a, b) * (1 - 0.4 * Math.abs(t) / R);
+      if (score > best) { best = score; bestT = t; }
+    }
+    if (best > 35) { out[key] = {x: e.x + ux * bestT, y: e.y + uy * bestT}; (out.snapped = out.snapped || {})[key] = Math.round(best); continue; }
+    // Backup: the edge can run almost parallel to the chain (e.g. along the side of the neck), so the line search misses
+    // it. Search a small circle around the end (radius R/2), in 4 directions; nearer points win ties.
+    const at2 = (x, y) => { const x0 = Math.round(x - bx), y0 = Math.round(y - by); if (x0 < 1 || y0 < 1 || x0 >= bw - 1 || y0 >= bh - 1) return null; let r = 0, g = 0, b = 0;
+      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) { const i = ((y0 + oy) * bw + x0 + ox) * 4; r += data[i]; g += data[i + 1]; b += data[i + 2]; } return [r / 9, g / 9, b / 9]; };
+    const r2 = R / 2; let b2 = 0, bp = null;
+    for (let oy = -r2; oy <= r2; oy += 2) for (let ox = -r2; ox <= r2; ox += 2) {
+      const dd = Math.hypot(ox, oy); if (dd > r2) continue; const X = e.x + ox, Y = e.y + oy; let gmax = 0;
+      for (const [vx, vy] of [[1, 0], [0, 1], [0.7, 0.7], [0.7, -0.7]]) { const a = at2(X - vx * 3, Y - vy * 3), b = at2(X + vx * 3, Y + vy * 3); if (a && b) gmax = Math.max(gmax, cdist(a, b)); }
+      const sc = gmax * (1 - 0.5 * dd / r2); if (sc > b2) { b2 = sc; bp = {x: X, y: Y}; }
+    }
+    if (b2 > 35 && bp) { out[key] = bp; (out.snapped = out.snapped || {})[key] = Math.round(b2); }
+  }
+  return out;
+}
 function render(source, w, h, ts) {
   // v9: draw at the screen's real pixel density (up to 2x) so the pendant stays sharp.
   const S = Math.min(2, Math.max(1, (canvas.clientWidth || w) * (window.devicePixelRatio || 1) / w));
@@ -808,7 +861,8 @@ function render(source, w, h, ts) {
   if (p) {
     found++; if (firstFoundMs === null) firstFoundMs = performance.now() - startMs;
     used = mode === "camera" ? smoothen(p) : p;
-    const g = drawNecklace(used);
+    const drawn = snapEnds(source, used, w, h); lastDrawn = drawn; // v13e: ends snapped onto the color change
+    const g = drawNecklace(drawn);
     drawHairOver(source, used, g, w, h, S);
     if (!(window.__dbg && window.__dbg.noCollar)) drawCollarOver(source, used, g, w, h, S);
   }
