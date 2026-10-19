@@ -85,6 +85,7 @@ let lock = null, frontRun = 0, lockedAt = 0, lastGood = null;
 const lockOn = () => mode === "camera" || !!window.__forceLock;
 window.__resetLock = () => { lock = null; frontRun = 0; lastGood = null; smooth = null; };
 window.__getLock = () => lock;
+window.__getLastGood = () => lastGood; // test hook
 let nudge = 0; // Higher/Lower buttons, in steps of 0.03 x shoulder width
 let length = 17; // v10b: 16-18 in range (Kristin's own 44 cm chain is in it)
 const say = (t) => { statusEl.textContent = t; };
@@ -207,9 +208,9 @@ function neckEdges(p, w, h) {
   const base = p.sw * 0.17; // v8 width (Kristin liked v1's 0.17 x shoulder width)
   const out = {L: base, R: base, how: "v8 width"};
   if (!seg) return out;
-  const ca = Math.cos(p.ang), sa = Math.sin(p.ang); let ny = p.neckY - p.sm.y;
+  const ca = Math.cos(p.ang), sa = Math.sin(p.ang); let ny = (p.neckYNow ?? p.neckY) - p.sm.y; // v13b: from the CURRENT neck (not the locked face)
   // Start at the mouth's spot along the necklace line (more reliably on skin than the shoulder midpoint).
-  const mdx = p.mouth.x - p.sm.x, mdy = p.mouth.y - p.sm.y, cx = mdx * ca + mdy * sa;
+  const mN = p.mouthNow || p.mouth, mdx = mN.x - p.sm.x, mdy = mN.y - p.sm.y, cx = mdx * ca + mdy * sa;
   const pt = (x) => ({x: p.sm.x + x * ca - ny * sa, y: p.sm.y + x * sa + ny * ca});
   // v10b: if a high neck band sits at the chain's row, lift the row to just above the band (on the neck), so the chain
   // starts on the neck and crosses OVER the band, instead of stopping on it.
@@ -277,7 +278,7 @@ function neckEdges(p, w, h) {
   const mL = res[-1].met, mR = res[1].met;
   if (mL && !mR) { out.R = out.L; out.nyR = out.nyL; }
   else if (mR && !mL) { out.L = out.R; out.nyL = out.nyR; }
-  else {
+  else if (!(res[-1].corner && res[1].corner)) { // v13b: two clearly found corners are trusted as-is (a turned head is uneven)
     const wMin = Math.min(out.L, out.R); out.L = Math.min(out.L, wMin * 1.4); out.R = Math.min(out.R, wMin * 1.4);
     const yTop = Math.min(out.nyL, out.nyR); out.nyL = Math.min(out.nyL, yTop + p.sw * 0.06); out.nyR = Math.min(out.nyR, yTop + p.sw * 0.06);
   }
@@ -366,6 +367,10 @@ function neckEdges(p, w, h) {
   const nm = (c) => ({0: "edge", 1: "hair", 4: "fabric"})[c] || "other";
   const lab = (r) => r.corner ? "corner" : (r.met ? "meets shirt" : nm(r.stopCat));
   out.how = `${neckSkin ? "" : "covered neck · "}L:${lab(res[-1])} R:${lab(res[1])}`;
+  // v13b (Kristin, Oct 18: turned her head and "the chain was in the middle of my neck"): pin each chain end to the point
+  // found on the CURRENT neck, in image coordinates, so the ends follow the neck while the pendant stays on the chest.
+  const abs = (x, y) => ({x: p.sm.x + x * ca - y * sa, y: p.sm.y + x * sa + y * ca});
+  out.endL = abs(-out.L, out.nyL); out.endR = abs(out.R, out.nyR);
   return out;
 }
 
@@ -433,8 +438,9 @@ function place(lm, w, h) {
 const neckY = sm.y - (sm.y - mouthV.y) * 0.45;
   window.__tryonDebug = {earMid: [Math.round((le.x + re.x) / 2), Math.round((le.y + re.y) / 2)], fit, earW: Math.round(earW), sw: Math.round(sw), ratio: +(earW / sw).toFixed(3), mouthToSm: +((sm.y - mouth.y) / sw).toFixed(3), sm: [Math.round(sm.x), Math.round(sm.y)], mouth: [Math.round(mouth.x), Math.round(mouth.y)], ang: +ang.toFixed(3), w, h};
   const p = {sm, mouth: mouthV, sw, ang, neckY, earW, fit, frontal};
+  if (faceOk) { p.mouthNow = mouth; p.neckYNow = sm.y - (sm.y - mouth.y) * 0.45; } // v13b: the neck where it is NOW
   const e = neckEdges(p, w, h); p.L = e.L; p.R = e.R; p.how = e.how; if (e.neckY !== undefined) p.neckY = e.neckY;
-  p.nyL = e.nyL !== undefined ? e.nyL : p.neckY - p.sm.y; p.nyR = e.nyR !== undefined ? e.nyR : p.neckY - p.sm.y;
+  p.nyL = e.nyL !== undefined ? e.nyL : p.neckY - p.sm.y; p.nyR = e.nyR !== undefined ? e.nyR : p.neckY - p.sm.y; p.endL = e.endL; p.endR = e.endR;
   if (window.__dbg && window.__dbg.forceHalf) { p.L = p.R = sw * window.__dbg.forceHalf; } // debug only
   p.collar = e.collar || {}; p.centerColor = e.centerColor; p.collarWhy = e.collarWhy; p.layered = !!e.layered; p.pendX = e.pendX || 0;
   if (window.__dbg && window.__dbg.forceCollar) p.collar = {"-1": true, "1": true}; // debug only
@@ -449,6 +455,8 @@ const neckY = sm.y - (sm.y - mouthV.y) * 0.45;
 // - size and tilt: change slowly (a body does not change size between frames);
 // - collar on/off: must agree for 6 frames in a row before it switches.
 let collarVotes = 0, layerVotes = 0;
+// v13b: chain ends (image points) follow at 0.3 per frame: quick enough to track a turning neck, steady enough not to buzz
+const lerpPt = (a, b) => (!b ? a : (!a ? b : {x: a.x + (b.x - a.x) * 0.3, y: a.y + (b.y - a.y) * 0.3}));
 function smoothen(p) {
   if (!smooth) { smooth = {...p, neckOff: p.neckY - p.sm.y}; collarVotes = 0; return smooth; }
   const unit = smooth.sw * FACE.earPerSw; // one face width
@@ -463,7 +471,7 @@ function smoothen(p) {
   let layered = !!smooth.layered; if (!!p.layered !== layered) { if (++layerVotes >= 6) { layered = !!p.layered; layerVotes = 0; } } else layerVotes = 0; // v12: 6 frames to switch
   if (!!(p.collar && p.collar[1]) !== !!(smooth.collar && smooth.collar[1])) { if (++collarVotes >= 6) { collar = p.collar; centerColor = p.centerColor; collarWhy = p.collarWhy; collarVotes = 0; } }
   else { collarVotes = 0; centerColor = p.centerColor || centerColor; }
-  smooth = {...p, sm: smNew, sw: swNew, ang: lerp(smooth.ang, p.ang, 0.08), neckOff, neckY: smNew.y + neckOff, earW: lerp(smooth.earW, p.earW, 0.06), L: lerp(smooth.L, p.L, 0.2), R: lerp(smooth.R, p.R, 0.2), /* v12b: chain ends follow the neck faster (Kristin: turned head, ends 'floating nowhere') */ pendX: lerp(smooth.pendX ?? 0, p.pendX || 0, 0.1), layered, nyL: lerp(smooth.nyL ?? p.nyL, p.nyL, 0.2), nyR: lerp(smooth.nyR ?? p.nyR, p.nyR, 0.2), collar, centerColor, collarWhy};
+  smooth = {...p, sm: smNew, sw: swNew, ang: lerp(smooth.ang, p.ang, 0.08), neckOff, neckY: smNew.y + neckOff, earW: lerp(smooth.earW, p.earW, 0.06), L: lerp(smooth.L, p.L, 0.2), R: lerp(smooth.R, p.R, 0.2), /* v12b: chain ends follow the neck faster (Kristin: turned head, ends 'floating nowhere') */ pendX: lerp(smooth.pendX ?? 0, p.pendX || 0, 0.1), layered, nyL: lerp(smooth.nyL ?? p.nyL, p.nyL, 0.2), nyR: lerp(smooth.nyR ?? p.nyR, p.nyR, 0.2), endL: lerpPt(smooth.endL, p.endL), endR: lerpPt(smooth.endR, p.endR), collar, centerColor, collarWhy};
   return smooth;
 }
 
@@ -480,7 +488,7 @@ window.__steadyTest = () => {
   smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
 };
 // v11b check: after any photo, the two chain start points match (widths within 25%, heights within 0.03 x sw).
-window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0601; };
+window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; if (/L:corner R:corner/.test(d.how || "")) return true; /* v13b: both corners found = trusted */ const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0601; };
 // v11 check: lock on a straight-on frame, then move ONLY the head (chin up/down, turn, tilt). The necklace must stay put
 // (within 1% of a face width). Run after a photo is loaded (uses its landmarks).
 window.__lockTest = () => {
@@ -529,8 +537,10 @@ let pendant = "rise"; // v9: the Rise first (Kristin, Oct 18)
 // v9d (Kristin, Oct 18: "looks rigid, give it a little curve"): MEASURED on Kristin's real chain in the calibration
 // photo: it bows outward about 4% of its length, most near the middle (Love Talla model photos match). A quadratic
 // bends half as far as its control point, so the control point sits 8% outward at 45% of the way down.
+// v13b (Kristin, Oct 18: "the way it hung felt too sharp... have we lost the slight softening?"): the bend moves LOWER
+// (control at 60% down, 10% out), so each side eases into the pendant instead of meeting it in a sharp V. Max bend ~5%.
 function chainCtrl(sx, ny, ex, ey) {
-  const t = 0.45, bow = 0.08 * Math.hypot(ex - sx, ey - ny), dir = Math.sign(sx - ex) || 1;
+  const t = 0.6, bow = 0.10 * Math.hypot(ex - sx, ey - ny), dir = Math.sign(sx - ex) || 1;
   return {x: sx + (ex - sx) * t + dir * bow, y: ny + (ey - ny) * t};
 }
 // Check (Oct 18): sample each side; the chain must only go down toward the pendant. Returns true when it does.
@@ -617,9 +627,11 @@ function strokeChain(sx, ny, a, sw, pw) {
 function drawNecklace(p) {
   const {sm, sw, ang, neckY} = p;
   ctx.save(); ctx.translate(sm.x, sm.y); ctx.rotate(ang);
-  const ny0 = neckY - sm.y, nyL = p.nyL ?? ny0, nyR = p.nyR ?? ny0, ny = Math.min(nyL, nyR), py = sw * (DROP[length] + nudge), r = sw * 0.023; /* v9: Rise size, about 0.065 x shoulder width across the sun points */
+  const loc = (q) => { const dx = q.x - sm.x, dy = q.y - sm.y, c = Math.cos(ang), s2 = Math.sin(ang); return {x: dx * c + dy * s2, y: -dx * s2 + dy * c}; };
+  const eL = p.endL ? loc(p.endL) : null, eR = p.endR ? loc(p.endR) : null; // v13b: ends pinned to the current neck
+  const ny0 = neckY - sm.y, nyL = eL ? eL.y : (p.nyL ?? ny0), nyR = eR ? eR.y : (p.nyR ?? ny0), ny = Math.min(nyL, nyR), py = sw * (DROP[length] + nudge), r = sw * 0.023; /* v9: Rise size, about 0.065 x shoulder width across the sun points */
   // v9: each side starts at its own neck edge (p.L / p.R) instead of one fixed width.
-  const left = -(p.L ?? sw * 0.17), right = (p.R ?? sw * 0.17);
+  const left = eL ? eL.x : -(p.L ?? sw * 0.17), right = eR ? eR.x : (p.R ?? sw * 0.17);
   ctx.lineCap = "round";
   // v3 (Kristin, Oct 18): the pendant is the LOWEST point. Each side runs only downhill from the neck to the bail.
   const P = PENDANTS[pendant];
