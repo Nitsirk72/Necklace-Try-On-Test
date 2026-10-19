@@ -251,7 +251,28 @@ function neckEdges(p, w, h) {
   // edge (hair or background). The OUTERMOST column that still has skin-over-fabric is the corner. If hair covers the
   // corner, this stops where the hair starts, and the hair is drawn over the chain's end.
   out.corners = {};
+  // v13d (Kristin's dots on 6 clean photos, Oct 18): her end points sit on the OUTLINE, where the side of the neck meets
+  // the top of the shoulder (or the top of a collar). Walk DOWN row by row from the neck; in each row follow the skin out
+  // from the middle. Above the corner the skin ends at background or hair; the FIRST row where it ends at fabric is the
+  // corner. (The v13 search below, skin-over-fabric at the neckline, is now the fallback: it sat 45-55 px low on her tee.)
+  const outline = {};
   for (const s of [-1, 1]) {
+    for (let y = ny - p.sw * 0.04; y <= ny + p.sw * 0.3; y += step) {
+      if (!(isSkin(at(cx, y)) || at(cx, y) === 5)) continue;
+      let d = 0, miss = 0, last = 0, stop = -1;
+      while (d < p.sw * 0.32) { d += step; const c = at(cx + s * d, y); if (isSkin(c) || c === 5) { last = d; miss = 0; } else if (++miss >= 3) { stop = c; break; } }
+      // v13d: "fabric" with the FACE right above it is the shadow under the jaw (dark skin read as fabric in low light,
+      // Kristin's jacket photo), not a shirt: skip it.
+      const faceAbove = (() => { const xs = cx + s * (last + step * 3); for (let k = 1; k <= 8; k++) if (at(xs, y - p.sw * 0.0075 * k) === 3) return true; return false; })();
+      if (stop === 4 && !faceAbove && Math.abs(cx + s * last) >= p.sw * 0.09) { outline[s] = {ax: Math.abs(cx + s * last), y}; break; }
+    }
+  }
+  for (const s of [-1, 1]) {
+    if (outline[s]) {
+      const o = outline[s]; res[s] = {edge: o.ax + p.sw * 0.008, stopCat: res[s].stopCat, y: o.y, met: true, corner: true, neckEdge: res[s].edge, outline: true};
+      const cxp = s * o.ax; out.corners[s] = {x: p.sm.x + cxp * ca - o.y * sa, y: p.sm.y + cxp * sa + o.y * ca};
+      continue;
+    }
     let best = null, gap = 0;
     for (let ax = Math.max(0, s * cx); ax <= p.sw * 0.32; ax += p.sw * 0.006) {
       const x = s * ax; let prevSkin = false, yJ = null;
@@ -355,11 +376,50 @@ function neckEdges(p, w, h) {
         const inner = innerA ? gA : gB;
         out.layered = true; out.innerColor = innerA ? A : B; out.outerColor = innerA ? B : A;
         out.collar = {"-1": true, "1": true}; out.centerColor = out.innerColor; out.collarWhy = "open layer";
+        // v13d (Kristin's dot on the jacket photo): with an open jacket the chain ends where the neck meets the INNER top,
+        // not the jacket collar (the jacket is drawn over the chain above that). Redo the outline walk, counting only fabric
+        // of the inner top's color as "the shirt".
+        for (const s2 of [-1, 1]) {
+          for (let y = ny - p.sw * 0.04; y <= ny + p.sw * 0.35; y += step) {
+            if (!(isSkin(at(cx, y)) || at(cx, y) === 5)) continue;
+            let d = 0, miss = 0, last = 0, stop = -1, stopAt = null;
+            while (d < p.sw * 0.32) { d += step; const c = at(cx + s2 * d, y); if (isSkin(c) || c === 5) { last = d; miss = 0; } else if (++miss >= 3) { stop = c; stopAt = cx + s2 * d; break; } }
+            if (stop !== 4 || Math.abs(cx + s2 * last) < p.sw * 0.09) continue;
+            { const xs = cx + s2 * (last + step * 3); let fa = false; for (let k = 1; k <= 8; k++) if (at(xs, y - p.sw * 0.0075 * k) === 3) fa = true; if (fa) continue; } // jaw shadow
+            // read the fabric color a little further out (at the boundary it blends with skin and shadow), and ask: closer to
+            // the inner top or to the jacket? Majority of 3 spots.
+            let innerVotes = 0;
+            // v13d: compare TINT (share of red/green/blue), not raw color: a dark skin shadow is "close" to navy in raw
+            // color but red-brown in tint (Kristin's jacket photo, low light).
+            const tint = (c) => { const t = c[0] + c[1] + c[2] + 1; return [c[0] / t, c[1] / t, c[2] / t]; };
+            const lum = (c) => c[0] + c[1] + c[2];
+            const isInner = (c) => cdist(tint(c), tint(out.innerColor)) < 0.05 && lum(c) > lum(out.innerColor) * 0.5 && lum(c) < lum(out.innerColor) * 2.2;
+            for (const k of [0.02, 0.035, 0.05]) { const xx = stopAt + s2 * p.sw * k, q = {x: p.sm.x + xx * ca - y * sa, y: p.sm.y + xx * sa + y * ca}, col = colorAt(q.x, q.y, w, h); if (col && at(xx, y) === 4 && isInner(col)) innerVotes++; }
+            if (innerVotes >= 2) {
+              // The chain ends at the jacket's collar fold, halfway between where the collar first touches the neck (the
+              // outline corner found above) and where the inner top meets the neck (this row). Measured on Kristin's dot:
+              // the fold sat 60 px below the first and 55 px above the second.
+              const ax0 = Math.abs(cx + s2 * last), prevW = s2 < 0 ? out.L : out.R, prevY = s2 < 0 ? out.nyL : out.nyR;
+              const ax = (ax0 + p.sw * 0.008 + prevW) / 2, yy = (y + prevY) / 2;
+              if (s2 < 0) { out.L = ax; out.nyL = yy; } else { out.R = ax; out.nyR = yy; }
+              out.corners[s2] = {x: p.sm.x + s2 * ax * ca - yy * sa, y: p.sm.y + s2 * ax * sa + yy * ca};
+              break;
+            }
+          }
+        }
         // pendant into the opening: if the spot under the chin is outer fabric and inner fabric is within 0.15 x sw
-        const onOuter = !inner.some((t) => Math.abs(t.x) < p.sw * 0.015);
-        if (onOuter) {
-          const near = inner.filter((t) => Math.abs(t.x) <= p.sw * 0.15).sort((a, b) => Math.abs(a.x) - Math.abs(b.x))[0];
-          if (near) out.pendX = near.x + Math.sign(near.x) * p.sw * 0.025;
+        // v13d (Kristin's jacket photo: pendant overlapped the jacket edge): slide the WHOLE pendant into the opening.
+        // Find the run of inner-top fabric nearest the middle at pendant height, then move the pendant the least distance
+        // that puts all of it inside that run (up to 0.15 x sw).
+        const half = p.sw * 0.04, xs = inner.map((t) => t.x).sort((a, b) => a - b);
+        const runs = []; let a0 = null, prev = null;
+        for (const xv of xs) { if (a0 === null) { a0 = xv; prev = xv; continue; } if (xv - prev > p.sw * 0.015) { runs.push([a0, prev]); a0 = xv; } prev = xv; }
+        if (a0 !== null) runs.push([a0, prev]);
+        const run = runs.sort((r1, r2) => Math.min(Math.abs(r1[0]), Math.abs(r1[1]), (r1[0] <= 0 && r1[1] >= 0) ? 0 : 9) - Math.min(Math.abs(r2[0]), Math.abs(r2[1]), (r2[0] <= 0 && r2[1] >= 0) ? 0 : 9))[0];
+        if (run) {
+          const lo = run[0] + half, hi = run[1] - half;
+          let target = 0; if (lo <= hi) target = Math.min(hi, Math.max(lo, 0)); else target = (run[0] + run[1]) / 2;
+          if (Math.abs(target) <= p.sw * 0.15) out.pendX = target;
         }
       }
     }
@@ -447,7 +507,7 @@ const neckY = sm.y - (sm.y - mouthV.y) * 0.45;
   if (window.__dbg && window.__dbg.forceHalf) { p.L = p.R = sw * window.__dbg.forceHalf; } // debug only
   p.collar = e.collar || {}; p.centerColor = e.centerColor; p.collarWhy = e.collarWhy; p.layered = !!e.layered; p.pendX = e.pendX || 0;
   if (window.__dbg && window.__dbg.forceCollar) p.collar = {"-1": true, "1": true}; // debug only
-  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist; window.__tryonDebug.votes = e.votes; window.__tryonDebug.layerDbg = e.layerDbg; window.__tryonDebug.corners = e.corners; window.__tryonDebug.hits = e.collarHits;
+  window.__tryonDebug.collar = [!!p.collar[-1], !!p.collar[1]]; window.__tryonDebug.collarHits = e.collarHits; window.__tryonDebug.collarWhy = e.collarWhy; window.__tryonDebug.collarDist = e.collarDist; window.__tryonDebug.votes = e.votes; window.__tryonDebug.layerDbg = e.layerDbg; window.__tryonDebug.corners = e.corners; window.__tryonDebug.redoDbg = e.redoDbg; window.__tryonDebug.inner = e.innerColor && e.innerColor.map(Math.round); window.__tryonDebug.hits = e.collarHits;
   lastGood = p;
   window.__tryonDebug.L = +(e.L / sw).toFixed(3); window.__tryonDebug.R = +(e.R / sw).toFixed(3); window.__tryonDebug.how = e.how; window.__tryonDebug.raw = e.raw;
   return p;
@@ -491,7 +551,7 @@ window.__steadyTest = () => {
   smooth = save; return {jitterPct: +(jitter * 100).toFixed(2), followPct: Math.round(follow * 100), ok: jitter < 0.005 && follow > 0.9};
 };
 // v11b check: after any photo, the two chain start points match (widths within 25%, heights within 0.03 x sw).
-window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; const hOk = Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0301; if (/L:corner R:corner/.test(d.how || "")) return hOk; /* v13c: corners keep widths, heights must match */ const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && hOk; };
+window.__sidesMatch = () => { const d = window.__tryonDebug, p = lastGood; if (!d || !p) return false; const hOk = p.layered || Math.abs((p.nyL ?? 0) - (p.nyR ?? 0)) <= p.sw * 0.0301; /* v13d: an open jacket covers one side lower (Kristin's dots) */ if (/L:corner R:corner/.test(d.how || "")) return hOk; /* v13c: corners keep widths, heights must match */ const ratio = Math.max(p.L, p.R) / Math.min(p.L, p.R); return ratio <= 1.4001 && hOk; };
 // v11 check: lock on a straight-on frame, then move ONLY the head (chin up/down, turn, tilt). The necklace must stay put
 // (within 1% of a face width). Run after a photo is loaded (uses its landmarks).
 window.__lockTest = () => {
@@ -518,6 +578,17 @@ window.__lockTest = () => {
   }
   window.__forceLock = false; window.__resetLock();
   return {ok, res};
+};
+// v13d check: Kristin's own dots (Oct 18, drawn on her 6 clean photos with tools/draw.html) on the sides nothing covers.
+// Every version must land the chain ends within an average of 15 px of her dots, worst 30 px. Run: await window.__dotTest()
+window.__dotTest = async () => {
+  const T = [["9603", -1, 386, 948], ["9603", 1, 686, 950], ["9606", -1, 416, 899], ["9606", 1, 690, 903], ["9607", -1, 423, 936], ["9607", 1, 702, 927], ["9602", 1, 685, 1018], ["9604", 1, 731, 1043], ["9605", 1, 732, 1114]];
+  let sum = 0, worst = 0; const rows = [];
+  for (const n of ["9602", "9603", "9604", "9605", "9606", "9607"]) {
+    await window.__tryonPhoto("/test/clean_" + n + ".jpg"); const q = lastGood; if (!q) return {ok: false, why: "no fit " + n};
+    for (const t of T.filter((t) => t[0] === n)) { const e = t[1] < 0 ? q.endL : q.endR; const d = Math.hypot(e.x - t[2], e.y - t[3]); sum += d; worst = Math.max(worst, d); rows.push(n + (t[1] < 0 ? " L " : " R ") + Math.round(d)); }
+  }
+  const avg = sum / T.length; return {ok: avg <= 15 && worst <= 30, avg: Math.round(avg), worst: Math.round(worst), rows};
 };
 // v7 (Oct 18): real Love Talla pendants, cut out from their product photos. w = width as a share of shoulder width;
 // attach = where the chain meets the pendant, as fractions of the image (two points for the heart, one loop for the disc).
@@ -702,10 +773,13 @@ function drawCollarOver(source, p, g, w, h, S) {
   layerCtx.drawImage(buildCollarMask(w, h, p.centerColor), 0, 0, w, h); layerCtx.globalCompositeOperation = "source-over";
   ctx.save(); ctx.translate(p.sm.x, p.sm.y); ctx.rotate(p.ang);
   const b = g.box, top = g.ny - p.sw * 0.12, bot = p.layered ? b.y + b.h : g.ny + (b.y - g.ny) * 0.45; // v12: an open outer layer covers the whole chain
+  // v13d (Kristin: a bit of chain showed on the white jacket next to the pendant): cover the full width, leaving a hole
+  // only for the pendant itself (not a whole strip above it).
+  const pad = p.sw * 0.01;
   ctx.beginPath();
-  if (p.collar[-1]) ctx.rect(g.left - p.sw * 0.2, top, -g.left + p.sw * 0.2 + Math.min(0, b.x), bot - top);
-  if (p.collar[1]) ctx.rect(Math.max(0, b.x + b.w), top, g.right + p.sw * 0.2 - Math.max(0, b.x + b.w), bot - top);
-  ctx.clip();
+  ctx.rect(g.left - p.sw * 0.2, top, (g.right - g.left) + p.sw * 0.4, bot - top + pad);
+  ctx.rect(b.x - pad, b.y - pad, b.w + 2 * pad, b.h + 2 * pad);
+  ctx.clip("evenodd");
   ctx.rotate(-p.ang); ctx.translate(-p.sm.x, -p.sm.y);
   ctx.drawImage(layer, 0, 0, layer.width, layer.height, 0, 0, w, h);
   ctx.restore();
